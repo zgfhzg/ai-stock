@@ -7,6 +7,11 @@ type SystemStatus = {
   api: string;
   trading_mode: string;
   live_trading_enabled: boolean;
+  kis: {
+    configured: boolean;
+    base_url: string;
+    account_configured: boolean;
+  };
   strategy: {
     status: string;
     service: string;
@@ -70,16 +75,20 @@ function App() {
           <Metric icon={<Wifi />} label="API" value={status?.api ?? "확인 중"} />
           <Metric icon={<Bot />} label="AI 전략 엔진" value={status?.strategy.status ?? "확인 중"} />
           <Metric icon={<ShieldCheck />} label="거래 모드" value={status?.trading_mode ?? "확인 중"} />
-          <Metric icon={<Activity />} label="실전 주문" value={status?.live_trading_enabled ? "ON" : "OFF"} />
+          <Metric icon={<Activity />} label="KIS 연동" value={status?.kis?.configured ? "설정됨" : "설정 필요"} />
         </section>
 
         <section className="content-grid">
           <div className="panel">
             <div className="panel-header">
               <h2>계좌 요약</h2>
-              <span>모의투자 연결 대기</span>
+              <span>{status?.kis?.account_configured ? "계좌 설정됨" : "모의투자 연결 대기"}</span>
             </div>
-            <div className="empty-state">한국투자증권 API 키를 설정하면 잔고와 손익 정보가 표시됩니다.</div>
+            <div className="empty-state">
+              {status?.kis?.configured
+                ? "이제 잔고 조회와 현재가 조회 API를 사용할 수 있습니다."
+                : "한국투자증권 API 키를 설정하면 잔고와 손익 정보가 표시됩니다."}
+            </div>
           </div>
 
           <div className="panel">

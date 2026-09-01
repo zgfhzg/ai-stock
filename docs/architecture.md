@@ -15,6 +15,7 @@ AI Stock은 Raspberry Pi에서 모의투자로 시작한 뒤 VPS로 이전할 �
 Rust 백엔드입니다.
 
 - 한국투자증권 API 연동
+- 접근 토큰 발급과 프로세스 내부 캐시
 - 계좌, 잔고, 시세, 주문 API 제공
 - 자동매매 상태 관리
 - 주문 전 리스크 체크
@@ -37,6 +38,16 @@ Python 서비스입니다.
 4. Strategy는 추천과 근거를 반환합니다.
 5. API는 리스크 규칙을 통과한 제안만 주문 후보로 저장합니다.
 6. 실전 주문은 사용자가 명시적으로 허용한 경우에만 실행됩니다.
+
+## 한국투자증권 API
+
+초기 연동은 모의투자를 기준으로 합니다.
+
+- 토큰 발급: `/oauth2/tokenP`
+- 현재가 조회: `/uapi/domestic-stock/v1/quotations/inquire-price`, TR ID `FHKST01010100`
+- 잔고 조회: `/uapi/domestic-stock/v1/trading/inquire-balance`, 모의 TR ID `VTTC8434R`
+
+토큰 값은 API 응답이나 화면에 노출하지 않고, 서버 프로세스 내부에서만 보관합니다.
 
 ## 배포 전략
 

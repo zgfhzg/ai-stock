@@ -37,3 +37,26 @@ docker compose up --build
 - 모든 주문 판단과 API 응답은 로그로 남깁니다.
 - 하루 손실 한도에 도달하면 자동매매를 멈춥니다.
 - Raspberry Pi와 VPS 모두 같은 Docker Compose 구조로 실행합니다.
+
+## 한국투자증권 모의투자 연동
+
+`.env`에 한국투자증권 Open API 모의투자 값을 설정합니다.
+
+- `KIS_APP_KEY`
+- `KIS_APP_SECRET`
+- `KIS_ACCOUNT_NO`: 계좌번호 앞 8자리
+- `KIS_ACCOUNT_PRODUCT_CODE`: 계좌번호 뒤 2자리, 보통 `01`
+- `KIS_BASE_URL`: 모의투자는 `https://openapivts.koreainvestment.com:29443`
+
+기본 API:
+
+- `GET /api/kis/config`: KIS 설정 상태
+- `POST /api/kis/token`: 접근 토큰 발급 확인, 토큰 값은 응답에 노출하지 않음
+- `GET /api/account/balance`: 국내주식 잔고 조회
+- `GET /api/market/price/{symbol}`: 국내주식 현재가 조회, 예: `005930`
+
+참고:
+
+- 한국투자증권 접근토큰발급(P): `POST /oauth2/tokenP`
+- 국내주식 현재가: `GET /uapi/domestic-stock/v1/quotations/inquire-price`
+- 국내주식 잔고조회: `GET /uapi/domestic-stock/v1/trading/inquire-balance`
