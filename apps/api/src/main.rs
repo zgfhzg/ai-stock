@@ -8,8 +8,10 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    env,
+    collections::HashMap,
+    env, fs,
     net::SocketAddr,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -126,6 +128,8 @@ struct ProposalResponse {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    load_dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -304,7 +308,9 @@ struct AccessToken {
 }
 
 async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
-    if let Some(token) = state.token.read().await.as_ref() {
+    let mut token_guard = state.token.write().await;
+
+    if let Some(token) = token_guard.as_ref() {
         if token.fetched_at.elapsed() < Duration::from_secs(60 * 60 * 23) {
             return Ok(AccessToken {
                 value: token.access_token.clone(),
@@ -344,7 +350,7 @@ async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
         expires_at: token.access_token_token_expired.clone(),
         fetched_at: Instant::now(),
     };
-    *state.token.write().await = Some(cached);
+    *token_guard = Some(cached);
 
     Ok(AccessToken {
         value: token.access_token,
@@ -517,4 +523,49 @@ fn load_config() -> AppConfig {
 
 fn read_env(key: &str, fallback: &str) -> String {
     env::var(key).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn load_dotenv() {
+    let Some(path) = find_dotenv() else {
+        return;
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+
+    for (key, value) in parse_dotenv(&content) {
+        if env::var_os(&key).is_none() {
+            env::set_var(key, value);
+        }
+    }
+}
+
+fn find_dotenv() -> Option<PathBuf> {
+    let mut dir = env::current_dir().ok()?;
+
+    loop {
+        let path = dir.join(".env");
+        if path.is_file() {
+            return Some(path);
+        }
+
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn parse_dotenv(content: &str) -> HashMap<String, String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+
+            let (key, value) = trimmed.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
 }
