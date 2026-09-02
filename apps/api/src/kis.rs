@@ -305,8 +305,26 @@ async fn parse_kis_response(response: Response) -> ApiResult<Value> {
         ));
     }
 
-    serde_json::from_str::<Value>(&text)
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_response_parse_failed", error))
+    let value = serde_json::from_str::<Value>(&text)
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_response_parse_failed", error))?;
+
+    if value.get("rt_cd").and_then(Value::as_str) == Some("1") {
+        let message = value
+            .get("msg1")
+            .and_then(Value::as_str)
+            .unwrap_or("KIS request failed.")
+            .to_string();
+
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                code: "kis_api_error".to_string(),
+                message,
+            }),
+        ));
+    }
+
+    Ok(value)
 }
 
 fn to_kis_response(value: Value) -> KisApiResponse {

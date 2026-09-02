@@ -469,27 +469,23 @@ function formatOrderLog(log: Record<string, unknown>) {
   return `${status} · ${side} ${response.symbol} ${response.quantity}주 @ ${formatKrw(response.price)}`;
 }
 
-function loadQuotes(items: WatchlistItem[]) {
-  return Promise.all(
-    items.map((item) =>
-      fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`)
-        .then((quote) => [item.symbol, quote] as const)
-        .catch((error) => [item.symbol, error instanceof Error ? error.message : "현재가 조회 실패"] as const)
-    )
-  ).then((entries) => {
-    const quotes: Record<string, KisApiResponse> = {};
-    const quoteErrors: Record<string, string> = {};
+async function loadQuotes(items: WatchlistItem[]) {
+  const quotes: Record<string, KisApiResponse> = {};
+  const quoteErrors: Record<string, string> = {};
 
-    for (const [symbol, result] of entries) {
-      if (typeof result === "string") {
-        quoteErrors[symbol] = result;
-      } else {
-        quotes[symbol] = result;
-      }
+  for (const [index, item] of items.entries()) {
+    if (index > 0) {
+      await delay(450);
     }
 
-    return { quotes, quoteErrors };
-  });
+    try {
+      quotes[item.symbol] = await fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`);
+    } catch (error) {
+      quoteErrors[item.symbol] = error instanceof Error ? error.message : "현재가 조회 실패";
+    }
+  }
+
+  return { quotes, quoteErrors };
 }
 
 function fetchJsonWithRetry<T>(path: string, attempts = 2): Promise<T> {
@@ -501,9 +497,13 @@ function fetchJsonWithRetry<T>(path: string, attempts = 2): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       window.setTimeout(() => {
         fetchJsonWithRetry<T>(path, attempts - 1).then(resolve).catch(reject);
-      }, 700);
+      }, 1200);
     });
   });
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
