@@ -191,7 +191,8 @@ h2 {
   text-align: left;
 }
 
-.risk-list {
+.risk-list,
+.summary-grid {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -199,7 +200,8 @@ h2 {
   gap: 12px;
 }
 
-.risk-list li {
+.risk-list li,
+.summary-grid div {
   display: flex;
   justify-content: space-between;
   gap: 18px;
@@ -207,12 +209,54 @@ h2 {
   border-bottom: 1px solid #ece8df;
 }
 
+.risk-list.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.risk-list.compact li,
+.summary-grid div:last-child,
 .risk-list li:last-child {
   border-bottom: 0;
 }
 
-.risk-list span {
+.risk-list span,
+.summary-grid dt,
+.quote-box span,
+.quote-box small {
   color: #657066;
+}
+
+.summary-grid {
+  gap: 14px;
+}
+
+.summary-grid div {
+  align-items: center;
+}
+
+.summary-grid dt {
+  font-size: 14px;
+}
+
+.summary-grid dd {
+  margin: 0;
+  font-weight: 800;
+  font-size: 20px;
+}
+
+.quote-box {
+  min-height: 160px;
+  display: grid;
+  align-content: center;
+  gap: 10px;
+}
+
+.quote-box strong {
+  font-size: 34px;
+}
+
+.quote-box small {
+  font-size: 14px;
 }
 
 @media (max-width: 920px) {
@@ -241,14 +285,16 @@ h2 {
 
   .topbar,
   .panel-header,
-  .risk-list li {
+  .risk-list li,
+  .summary-grid div {
     align-items: stretch;
     flex-direction: column;
   }
 
   .sidebar nav,
   .status-grid,
-  .content-grid {
+  .content-grid,
+  .risk-list.compact {
     grid-template-columns: 1fr;
   }
 }

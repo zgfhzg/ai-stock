@@ -24,13 +24,33 @@ type SystemStatus = {
   };
 };
 
+type KisApiResponse = {
+  rt_cd?: string;
+  msg_cd?: string;
+  msg1?: string;
+  output?: Record<string, string> | null;
+  output1?: Array<Record<string, string>> | null;
+  output2?: Array<Record<string, string>> | null;
+};
+
+type DashboardData = {
+  balance: KisApiResponse | null;
+  price: KisApiResponse | null;
+};
+
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ||
   `${window.location.protocol}//${window.location.hostname}:8080`;
 
 function App() {
   const [status, setStatus] = React.useState<SystemStatus | null>(null);
+  const [dashboardData, setDashboardData] = React.useState<DashboardData>({
+    balance: null,
+    price: null,
+  });
   const [error, setError] = React.useState<string | null>(null);
+  const accountSummary = dashboardData.balance?.output2?.[0];
+  const samsungPrice = dashboardData.price?.output;
 
   React.useEffect(() => {
     fetch(`${apiBaseUrl}/api/status`)
@@ -43,6 +63,21 @@ function App() {
       .then(setStatus)
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
+
+  React.useEffect(() => {
+    if (!status?.kis?.configured || !status.kis.account_configured) {
+      return;
+    }
+
+    Promise.all([
+      fetchJson<KisApiResponse>("/api/account/balance"),
+      fetchJson<KisApiResponse>("/api/market/price/005930"),
+    ])
+      .then(([balance, price]) => {
+        setDashboardData({ balance, price });
+      })
+      .catch(() => setError("한국투자증권 데이터를 불러오지 못했습니다."));
+  }, [status]);
 
   return (
     <main className="app-shell">
@@ -84,19 +119,40 @@ function App() {
               <h2>계좌 요약</h2>
               <span>{status?.kis?.account_configured ? "계좌 설정됨" : "모의투자 연결 대기"}</span>
             </div>
-            <div className="empty-state">
-              {status?.kis?.configured
-                ? "이제 잔고 조회와 현재가 조회 API를 사용할 수 있습니다."
-                : "한국투자증권 API 키를 설정하면 잔고와 손익 정보가 표시됩니다."}
-            </div>
+            {accountSummary ? (
+              <dl className="summary-grid">
+                <div><dt>총 평가금액</dt><dd>{formatKrwText(accountSummary.tot_evlu_amt)}</dd></div>
+                <div><dt>예수금</dt><dd>{formatKrwText(accountSummary.dnca_tot_amt)}</dd></div>
+                <div><dt>주식 평가금액</dt><dd>{formatKrwText(accountSummary.scts_evlu_amt)}</dd></div>
+                <div><dt>평가손익</dt><dd>{formatKrwText(accountSummary.evlu_pfls_smtl_amt)}</dd></div>
+              </dl>
+            ) : (
+              <div className="empty-state">
+                {status?.kis?.configured
+                  ? "잔고 데이터를 불러오는 중입니다."
+                  : "한국투자증권 API 키를 설정하면 잔고와 손익 정보가 표시됩니다."}
+              </div>
+            )}
           </div>
 
           <div className="panel">
             <div className="panel-header">
+              <h2>관심 종목</h2>
+              <span>005930</span>
+            </div>
+            <div className="quote-box">
+              <span>삼성전자</span>
+              <strong>{formatKrwText(samsungPrice?.stck_prpr)}</strong>
+              <small>{formatSignedChange(samsungPrice?.prdy_vrss, samsungPrice?.prdy_ctrt)}</small>
+            </div>
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
               <h2>리스크 제한</h2>
               <span>기본 보호장치</span>
             </div>
-            <ul className="risk-list">
+            <ul className="risk-list compact">
               <li><span>1회 주문 한도</span><strong>{formatKrw(status?.risk.max_order_amount_krw)}</strong></li>
               <li><span>종목 최대 비중</span><strong>{formatPercent(status?.risk.max_position_ratio)}</strong></li>
               <li><span>일일 손실 제한</span><strong>{formatPercent(status?.risk.daily_max_loss_ratio)}</strong></li>
@@ -134,11 +190,39 @@ function formatKrw(value?: number) {
   return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(value);
 }
 
+function formatKrwText(value?: string) {
+  const numberValue = Number(value ?? "");
+  if (!Number.isFinite(numberValue)) {
+    return "-";
+  }
+
+  return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(numberValue);
+}
+
 function formatPercent(value?: number) {
   if (value === undefined) {
     return "-";
   }
   return `${Math.round(value * 100)}%`;
+}
+
+function formatSignedChange(value?: string, rate?: string) {
+  if (!value || !rate) {
+    return "전일 대비 -";
+  }
+
+  const change = Number(value);
+  const prefix = change > 0 ? "+" : "";
+  return `전일 대비 ${prefix}${formatKrwText(value)} (${prefix}${rate}%)`;
+}
+
+function fetchJson<T>(path: string): Promise<T> {
+  return fetch(`${apiBaseUrl}${path}`).then((response) => {
+    if (!response.ok) {
+      throw new Error(`Request failed: ${path}`);
+    }
+    return response.json();
+  });
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
