@@ -41,6 +41,7 @@ type WatchlistItem = {
 type DashboardData = {
   balance: KisApiResponse | null;
   quotes: Record<string, KisApiResponse>;
+  quoteErrors: Record<string, string>;
 };
 
 type OrderResponse = {
@@ -63,6 +64,7 @@ function App() {
   const [dashboardData, setDashboardData] = React.useState<DashboardData>({
     balance: null,
     quotes: {},
+    quoteErrors: {},
   });
   const [watchlist, setWatchlist] = React.useState<WatchlistItem[]>([]);
   const [symbolInput, setSymbolInput] = React.useState("");
@@ -102,16 +104,18 @@ function App() {
       fetchJson<WatchlistItem[]>("/api/watchlist"),
     ])
       .then(async ([balance, items]) => {
-        const quotes = await loadQuotes(items);
+        const { quotes, quoteErrors } = await loadQuotes(items);
         setWatchlist(items);
         if (items[0] && orderSymbol === "005930") {
           setOrderSymbol(items[0].symbol);
         }
-        setDashboardData({ balance, quotes });
+        setDashboardData({ balance, quotes, quoteErrors });
         return fetchJson<Array<Record<string, unknown>>>("/api/orders");
       })
       .then(setOrderLogs)
-      .catch(() => setError("한국투자증권 데이터를 불러오지 못했습니다."));
+      .catch(() => {
+        setError("일부 데이터를 불러오지 못했습니다. 조회 가능한 정보는 계속 표시합니다.");
+      });
   }
 
   function handleAddWatchlistItem(event: React.FormEvent<HTMLFormElement>) {
@@ -127,9 +131,9 @@ function App() {
       body: JSON.stringify({ symbol, name: nameInput.trim() || undefined }),
     })
       .then(async (items) => {
-        const quotes = await loadQuotes(items);
+        const { quotes, quoteErrors } = await loadQuotes(items);
         setWatchlist(items);
-        setDashboardData((current) => ({ ...current, quotes }));
+        setDashboardData((current) => ({ ...current, quotes, quoteErrors }));
         setSymbolInput("");
         setNameInput("");
       })
@@ -139,9 +143,9 @@ function App() {
   function handleRemoveWatchlistItem(symbol: string) {
     fetchJson<WatchlistItem[]>(`/api/watchlist/${symbol}`, { method: "DELETE" })
       .then(async (items) => {
-        const quotes = await loadQuotes(items);
+        const { quotes, quoteErrors } = await loadQuotes(items);
         setWatchlist(items);
-        setDashboardData((current) => ({ ...current, quotes }));
+        setDashboardData((current) => ({ ...current, quotes, quoteErrors }));
       })
       .catch(() => setError("관심종목을 삭제하지 못했습니다."));
   }
@@ -250,6 +254,7 @@ function App() {
             <div className="watchlist">
               {watchlist.map((item) => {
                 const quote = dashboardData.quotes[item.symbol]?.output;
+                const quoteError = dashboardData.quoteErrors[item.symbol];
                 return (
                   <article className="quote-row" key={item.symbol}>
                     <div>
@@ -258,7 +263,7 @@ function App() {
                     </div>
                     <div>
                       <strong>{formatKrwText(quote?.stck_prpr)}</strong>
-                      <span>{formatSignedChange(quote?.prdy_vrss, quote?.prdy_ctrt)}</span>
+                      <span>{quoteError ?? formatSignedChange(quote?.prdy_vrss, quote?.prdy_ctrt)}</span>
                     </div>
                     <button aria-label={`${item.name} 삭제`} type="button" onClick={() => handleRemoveWatchlistItem(item.symbol)}>
                       <Trash2 size={16} />
@@ -377,6 +382,10 @@ function formatKrw(value?: number) {
 }
 
 function formatKrwText(value?: string) {
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+
   const numberValue = Number(value ?? "");
   if (!Number.isFinite(numberValue)) {
     return "-";
@@ -416,16 +425,46 @@ function formatOrderLog(log: Record<string, unknown>) {
 function loadQuotes(items: WatchlistItem[]) {
   return Promise.all(
     items.map((item) =>
-      fetchJson<KisApiResponse>(`/api/market/price/${item.symbol}`)
+      fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`)
         .then((quote) => [item.symbol, quote] as const)
+        .catch((error) => [item.symbol, error instanceof Error ? error.message : "현재가 조회 실패"] as const)
     )
-  ).then((entries) => Object.fromEntries(entries));
+  ).then((entries) => {
+    const quotes: Record<string, KisApiResponse> = {};
+    const quoteErrors: Record<string, string> = {};
+
+    for (const [symbol, result] of entries) {
+      if (typeof result === "string") {
+        quoteErrors[symbol] = result;
+      } else {
+        quotes[symbol] = result;
+      }
+    }
+
+    return { quotes, quoteErrors };
+  });
+}
+
+function fetchJsonWithRetry<T>(path: string, attempts = 2): Promise<T> {
+  return fetchJson<T>(path).catch((error) => {
+    if (attempts <= 1) {
+      throw error;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      window.setTimeout(() => {
+        fetchJsonWithRetry<T>(path, attempts - 1).then(resolve).catch(reject);
+      }, 700);
+    });
+  });
 }
 
 function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return fetch(`${apiBaseUrl}${path}`, init).then((response) => {
     if (!response.ok) {
-      throw new Error(`Request failed: ${path}`);
+      return response.text().then((text) => {
+        throw new Error(text || `Request failed: ${path}`);
+      });
     }
     return response.json();
   });

@@ -4,6 +4,8 @@ services:
       context: ./apps/api
     env_file:
       - .env
+    environment:
+      - STRATEGY_URL=http://strategy:8090
     ports:
       - "8080:8080"
     volumes:
