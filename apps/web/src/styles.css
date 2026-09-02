@@ -283,7 +283,7 @@ h2 {
 
 .order-form {
   display: grid;
-  grid-template-columns: 120px minmax(180px, 1fr) 120px 140px 88px;
+  grid-template-columns: minmax(96px, 0.8fr) minmax(180px, 1.4fr) minmax(96px, 0.8fr) minmax(112px, 0.9fr) 88px;
   gap: 10px;
 }
 
@@ -338,10 +338,21 @@ h2 {
   text-align: left;
 }
 
+.stock-suggestions strong,
+.stock-suggestions span {
+  min-width: 0;
+}
+
+.stock-suggestions strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stock-suggestions span {
   color: #667166;
   font-size: 13px;
-  white-space: nowrap;
+  text-align: right;
 }
 
 .quote-row button {
@@ -367,7 +378,7 @@ h2 {
 
 .quote-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 40px;
+  grid-template-columns: minmax(112px, 1fr) minmax(112px, 0.9fr) 40px;
   gap: 12px;
   align-items: center;
   min-height: 64px;
@@ -384,16 +395,22 @@ h2 {
 
 .quote-row div:nth-child(2) {
   justify-items: end;
+  text-align: right;
 }
 
 .quote-row strong,
 .quote-row span {
-  white-space: nowrap;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .quote-row span {
   color: #657066;
   font-size: 13px;
+}
+
+.quote-price strong {
+  white-space: nowrap;
 }
 
 .order-meta {
@@ -448,6 +465,14 @@ h2 {
   .content-grid {
     grid-template-columns: 1fr 1fr;
   }
+
+  .order-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .order-form button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 640px) {
@@ -479,7 +504,21 @@ h2 {
     width: 100%;
   }
 
+  .stock-suggestions button,
+  .quote-row {
+    align-items: stretch;
+  }
+
+  .stock-suggestions button {
+    display: grid;
+  }
+
+  .stock-suggestions span {
+    text-align: left;
+  }
+
   .quote-row div:nth-child(2) {
     justify-items: start;
+    text-align: left;
   }
 }

@@ -304,11 +304,11 @@ function App() {
                 const quoteError = dashboardData.quoteErrors[item.symbol];
                 return (
                   <article className="quote-row" key={item.symbol}>
-                    <div>
+                    <div className="quote-main">
                       <strong>{item.name}</strong>
                       <span>{item.symbol}</span>
                     </div>
-                    <div>
+                    <div className="quote-price">
                       <strong>{formatKrwText(quote?.stck_prpr)}</strong>
                       <span>{quoteError ?? formatSignedChange(quote?.prdy_vrss, quote?.prdy_ctrt)}</span>
                     </div>
