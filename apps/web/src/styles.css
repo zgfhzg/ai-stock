@@ -276,7 +276,7 @@ h2 {
 
 .watchlist-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 76px;
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -302,14 +302,24 @@ h2 {
 .watchlist-form button,
 .quote-row button,
 .order-form button {
-  width: 40px;
   height: 40px;
   border: 1px solid #d7d4ca;
   border-radius: 8px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #f8f7f2;
   color: #2f6f4f;
+}
+
+.watchlist-form button {
+  gap: 4px;
+  width: 76px;
+  font-weight: 800;
+}
+
+.quote-row button {
+  width: 40px;
 }
 
 .order-form button {

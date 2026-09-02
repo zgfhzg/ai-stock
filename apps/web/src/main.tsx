@@ -121,7 +121,10 @@ function App() {
   function handleAddWatchlistItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const symbol = symbolInput.trim();
-    if (!symbol) {
+    setError(null);
+
+    if (!/^\d{6}$/.test(symbol)) {
+      setError("관심종목은 6자리 종목코드로 입력해야 합니다. 예: 005930");
       return;
     }
 
@@ -249,7 +252,10 @@ function App() {
                 value={nameInput}
                 onChange={(event) => setNameInput(event.target.value)}
               />
-              <button aria-label="관심종목 추가" type="submit"><Plus size={18} /></button>
+              <button aria-label="관심종목 추가" type="submit">
+                <Plus size={18} />
+                <span>추가</span>
+              </button>
             </form>
             <div className="watchlist">
               {watchlist.map((item) => {
