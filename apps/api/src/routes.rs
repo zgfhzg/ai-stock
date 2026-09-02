@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Serialize;
@@ -10,6 +10,7 @@ use crate::{
     kis::{self, KisConfigStatus},
     state::AppState,
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
+    watchlist::{self, WatchlistItem, WatchlistItemInput},
 };
 
 pub fn app_router() -> Router<AppState> {
@@ -20,6 +21,8 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/kis/token", post(kis_token))
         .route("/api/account/balance", get(account_balance))
         .route("/api/market/price/:symbol", get(market_price))
+        .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
+        .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/ai/proposal", post(proposal))
 }
 
@@ -94,6 +97,24 @@ async fn market_price(
     Path(symbol): Path<String>,
 ) -> ApiResult<Json<kis::KisApiResponse>> {
     Ok(Json(kis::get_price(&state, &symbol).await?))
+}
+
+async fn watchlist(State(state): State<AppState>) -> ApiResult<Json<Vec<WatchlistItem>>> {
+    Ok(Json(watchlist::list(&state)?))
+}
+
+async fn add_watchlist_item(
+    State(state): State<AppState>,
+    Json(input): Json<WatchlistItemInput>,
+) -> ApiResult<Json<Vec<WatchlistItem>>> {
+    Ok(Json(watchlist::add(&state, input)?))
+}
+
+async fn remove_watchlist_item(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+) -> ApiResult<Json<Vec<WatchlistItem>>> {
+    Ok(Json(watchlist::remove(&state, &symbol)?))
 }
 
 async fn proposal(

@@ -54,6 +54,9 @@ docker compose up --build
 - `POST /api/kis/token`: 접근 토큰 발급 확인, 토큰 값은 응답에 노출하지 않음
 - `GET /api/account/balance`: 국내주식 잔고 조회
 - `GET /api/market/price/{symbol}`: 국내주식 현재가 조회, 예: `005930`
+- `GET /api/watchlist`: 관심종목 목록 조회
+- `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "symbol": "005930", "name": "삼성전자" }`
+- `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
 
 참고:
 

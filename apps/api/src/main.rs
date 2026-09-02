@@ -4,6 +4,7 @@ mod kis;
 mod routes;
 mod state;
 mod strategy;
+mod watchlist;
 
 use axum::{http::Method, Router};
 use std::net::SocketAddr;
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn cors() -> CorsLayer {
     CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_origin(Any)
         .allow_headers(Any)
 }

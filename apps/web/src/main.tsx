@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Activity, Bot, CircleDollarSign, ShieldCheck, Wifi } from "lucide-react";
+import { Activity, Bot, CircleDollarSign, Plus, ShieldCheck, Trash2, Wifi } from "lucide-react";
 import "./styles.css";
 
 type SystemStatus = {
@@ -33,9 +33,14 @@ type KisApiResponse = {
   output2?: Array<Record<string, string>> | null;
 };
 
+type WatchlistItem = {
+  symbol: string;
+  name: string;
+};
+
 type DashboardData = {
   balance: KisApiResponse | null;
-  price: KisApiResponse | null;
+  quotes: Record<string, KisApiResponse>;
 };
 
 const apiBaseUrl =
@@ -46,11 +51,13 @@ function App() {
   const [status, setStatus] = React.useState<SystemStatus | null>(null);
   const [dashboardData, setDashboardData] = React.useState<DashboardData>({
     balance: null,
-    price: null,
+    quotes: {},
   });
+  const [watchlist, setWatchlist] = React.useState<WatchlistItem[]>([]);
+  const [symbolInput, setSymbolInput] = React.useState("");
+  const [nameInput, setNameInput] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const accountSummary = dashboardData.balance?.output2?.[0];
-  const samsungPrice = dashboardData.price?.output;
 
   React.useEffect(() => {
     fetch(`${apiBaseUrl}/api/status`)
@@ -69,15 +76,53 @@ function App() {
       return;
     }
 
+    loadDashboardData();
+  }, [status]);
+
+  function loadDashboardData() {
     Promise.all([
       fetchJson<KisApiResponse>("/api/account/balance"),
-      fetchJson<KisApiResponse>("/api/market/price/005930"),
+      fetchJson<WatchlistItem[]>("/api/watchlist"),
     ])
-      .then(([balance, price]) => {
-        setDashboardData({ balance, price });
+      .then(async ([balance, items]) => {
+        const quotes = await loadQuotes(items);
+        setWatchlist(items);
+        setDashboardData({ balance, quotes });
       })
       .catch(() => setError("한국투자증권 데이터를 불러오지 못했습니다."));
-  }, [status]);
+  }
+
+  function handleAddWatchlistItem(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const symbol = symbolInput.trim();
+    if (!symbol) {
+      return;
+    }
+
+    fetchJson<WatchlistItem[]>("/api/watchlist", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol, name: nameInput.trim() || undefined }),
+    })
+      .then(async (items) => {
+        const quotes = await loadQuotes(items);
+        setWatchlist(items);
+        setDashboardData((current) => ({ ...current, quotes }));
+        setSymbolInput("");
+        setNameInput("");
+      })
+      .catch(() => setError("관심종목을 저장하지 못했습니다. 6자리 종목코드를 확인하세요."));
+  }
+
+  function handleRemoveWatchlistItem(symbol: string) {
+    fetchJson<WatchlistItem[]>(`/api/watchlist/${symbol}`, { method: "DELETE" })
+      .then(async (items) => {
+        const quotes = await loadQuotes(items);
+        setWatchlist(items);
+        setDashboardData((current) => ({ ...current, quotes }));
+      })
+      .catch(() => setError("관심종목을 삭제하지 못했습니다."));
+  }
 
   return (
     <main className="app-shell">
@@ -138,12 +183,44 @@ function App() {
           <div className="panel">
             <div className="panel-header">
               <h2>관심 종목</h2>
-              <span>005930</span>
+              <span>{watchlist.length}개</span>
             </div>
-            <div className="quote-box">
-              <span>삼성전자</span>
-              <strong>{formatKrwText(samsungPrice?.stck_prpr)}</strong>
-              <small>{formatSignedChange(samsungPrice?.prdy_vrss, samsungPrice?.prdy_ctrt)}</small>
+            <form className="watchlist-form" onSubmit={handleAddWatchlistItem}>
+              <input
+                aria-label="종목코드"
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="종목코드"
+                value={symbolInput}
+                onChange={(event) => setSymbolInput(event.target.value)}
+              />
+              <input
+                aria-label="종목명"
+                placeholder="종목명"
+                value={nameInput}
+                onChange={(event) => setNameInput(event.target.value)}
+              />
+              <button aria-label="관심종목 추가" type="submit"><Plus size={18} /></button>
+            </form>
+            <div className="watchlist">
+              {watchlist.map((item) => {
+                const quote = dashboardData.quotes[item.symbol]?.output;
+                return (
+                  <article className="quote-row" key={item.symbol}>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>{item.symbol}</span>
+                    </div>
+                    <div>
+                      <strong>{formatKrwText(quote?.stck_prpr)}</strong>
+                      <span>{formatSignedChange(quote?.prdy_vrss, quote?.prdy_ctrt)}</span>
+                    </div>
+                    <button aria-label={`${item.name} 삭제`} type="button" onClick={() => handleRemoveWatchlistItem(item.symbol)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </article>
+                );
+              })}
             </div>
           </div>
 
@@ -216,8 +293,17 @@ function formatSignedChange(value?: string, rate?: string) {
   return `전일 대비 ${prefix}${formatKrwText(value)} (${prefix}${rate}%)`;
 }
 
-function fetchJson<T>(path: string): Promise<T> {
-  return fetch(`${apiBaseUrl}${path}`).then((response) => {
+function loadQuotes(items: WatchlistItem[]) {
+  return Promise.all(
+    items.map((item) =>
+      fetchJson<KisApiResponse>(`/api/market/price/${item.symbol}`)
+        .then((quote) => [item.symbol, quote] as const)
+    )
+  ).then((entries) => Object.fromEntries(entries));
+}
+
+function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  return fetch(`${apiBaseUrl}${path}`, init).then((response) => {
     if (!response.ok) {
       throw new Error(`Request failed: ${path}`);
     }

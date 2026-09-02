@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub kis_account_product_code: String,
     pub kis_base_url: String,
     pub api_port: u16,
+    pub watchlist_path: String,
     pub max_order_amount_krw: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
@@ -35,6 +36,7 @@ impl AppConfig {
                 "https://openapivts.koreainvestment.com:29443",
             ),
             api_port: read_env("API_PORT", "8080").parse().unwrap_or(8080),
+            watchlist_path: read_env("WATCHLIST_PATH", "../../data/watchlist.json"),
             max_order_amount_krw: read_env("MAX_ORDER_AMOUNT_KRW", "100000")
                 .parse()
                 .unwrap_or(100000),
