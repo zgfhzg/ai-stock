@@ -4,6 +4,7 @@ mod kis;
 mod orders;
 mod routes;
 mod state;
+mod stocks;
 mod strategy;
 mod watchlist;
 

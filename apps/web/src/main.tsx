@@ -38,6 +38,10 @@ type WatchlistItem = {
   name: string;
 };
 
+type StockSearchResult = WatchlistItem & {
+  market: string;
+};
+
 type DashboardData = {
   balance: KisApiResponse | null;
   quotes: Record<string, KisApiResponse>;
@@ -67,8 +71,8 @@ function App() {
     quoteErrors: {},
   });
   const [watchlist, setWatchlist] = React.useState<WatchlistItem[]>([]);
-  const [symbolInput, setSymbolInput] = React.useState("");
-  const [nameInput, setNameInput] = React.useState("");
+  const [stockQuery, setStockQuery] = React.useState("");
+  const [stockSuggestions, setStockSuggestions] = React.useState<StockSearchResult[]>([]);
   const [orderSymbol, setOrderSymbol] = React.useState("005930");
   const [orderSide, setOrderSide] = React.useState("buy");
   const [orderQuantity, setOrderQuantity] = React.useState("1");
@@ -98,6 +102,32 @@ function App() {
     loadDashboardData();
   }, [status]);
 
+  React.useEffect(() => {
+    const query = stockQuery.trim();
+    if (query.length < 2) {
+      setStockSuggestions([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetchJson<StockSearchResult[]>(`/api/stocks/search?q=${encodeURIComponent(query)}`, {
+        signal: controller.signal,
+      })
+        .then(setStockSuggestions)
+        .catch((error) => {
+          if (error.name !== "AbortError") {
+            setStockSuggestions([]);
+          }
+        });
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [stockQuery]);
+
   function loadDashboardData() {
     Promise.all([
       fetchJson<KisApiResponse>("/api/account/balance"),
@@ -120,27 +150,31 @@ function App() {
 
   function handleAddWatchlistItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const symbol = symbolInput.trim();
+    addWatchlistQuery(stockQuery);
+  }
+
+  function addWatchlistQuery(queryValue: string) {
+    const query = queryValue.trim();
     setError(null);
 
-    if (!/^\d{6}$/.test(symbol)) {
-      setError("관심종목은 6자리 종목코드로 입력해야 합니다. 예: 005930");
+    if (!query) {
+      setError("추가할 종목명을 입력하세요. 예: 삼성전자");
       return;
     }
 
     fetchJson<WatchlistItem[]>("/api/watchlist", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ symbol, name: nameInput.trim() || undefined }),
+      body: JSON.stringify({ query }),
     })
       .then(async (items) => {
         const { quotes, quoteErrors } = await loadQuotes(items);
         setWatchlist(items);
         setDashboardData((current) => ({ ...current, quotes, quoteErrors }));
-        setSymbolInput("");
-        setNameInput("");
+        setStockQuery("");
+        setStockSuggestions([]);
       })
-      .catch(() => setError("관심종목을 저장하지 못했습니다. 6자리 종목코드를 확인하세요."));
+      .catch(() => setError("종목을 찾지 못했습니다. 검색 후보에서 정확한 종목을 선택해 주세요."));
   }
 
   function handleRemoveWatchlistItem(symbol: string) {
@@ -239,24 +273,31 @@ function App() {
             </div>
             <form className="watchlist-form" onSubmit={handleAddWatchlistItem}>
               <input
-                aria-label="종목코드"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="종목코드"
-                value={symbolInput}
-                onChange={(event) => setSymbolInput(event.target.value)}
-              />
-              <input
-                aria-label="종목명"
-                placeholder="종목명"
-                value={nameInput}
-                onChange={(event) => setNameInput(event.target.value)}
+                aria-label="종목명 또는 코드"
+                placeholder="종목명 또는 코드"
+                value={stockQuery}
+                onChange={(event) => setStockQuery(event.target.value)}
               />
               <button aria-label="관심종목 추가" type="submit">
                 <Plus size={18} />
                 <span>추가</span>
               </button>
             </form>
+            {stockSuggestions.length > 0 ? (
+              <div className="stock-suggestions">
+                {stockSuggestions.map((stock) => (
+                  <button
+                    aria-label={`${stock.name} 추가`}
+                    key={stock.symbol}
+                    type="button"
+                    onClick={() => addWatchlistQuery(stock.symbol)}
+                  >
+                    <strong>{stock.name}</strong>
+                    <span>{stock.symbol} · {stock.market}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="watchlist">
               {watchlist.map((item) => {
                 const quote = dashboardData.quotes[item.symbol]?.output;

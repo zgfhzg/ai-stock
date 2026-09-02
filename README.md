@@ -54,11 +54,18 @@ docker compose up --build
 - `POST /api/kis/token`: 접근 토큰 발급 확인, 토큰 값은 응답에 노출하지 않음
 - `GET /api/account/balance`: 국내주식 잔고 조회
 - `GET /api/market/price/{symbol}`: 국내주식 현재가 조회, 예: `005930`
+- `GET /api/stocks/search?q=삼성전자`: 종목명 또는 종목코드 검색
 - `GET /api/watchlist`: 관심종목 목록 조회
-- `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "symbol": "005930", "name": "삼성전자" }`
+- `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "query": "삼성전자" }`
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
 - `POST /api/orders`: 국내주식 현금 지정가 주문
 - `GET /api/orders`: 최근 주문 로그 조회
+
+종목 검색 목록은 `data/stocks.json`을 사용합니다. 공식 KIS 종목 마스터 기준으로 갱신하려면 아래 명령을 실행합니다.
+
+```sh
+python3 infra/scripts/update_stock_catalog.py
+```
 
 참고:
 

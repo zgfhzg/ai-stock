@@ -276,9 +276,9 @@ h2 {
 
 .watchlist-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 76px;
+  grid-template-columns: minmax(0, 1fr) 76px;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .order-form {
@@ -316,6 +316,32 @@ h2 {
   gap: 4px;
   width: 76px;
   font-weight: 800;
+}
+
+.stock-suggestions {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.stock-suggestions button {
+  min-height: 42px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #ffffff;
+  color: #17211a;
+  text-align: left;
+}
+
+.stock-suggestions span {
+  color: #667166;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .quote-row button {

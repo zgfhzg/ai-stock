@@ -1,15 +1,16 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
     state::AppState,
+    stocks::{self, Stock},
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
     watchlist::{self, WatchlistItem, WatchlistItemInput},
 };
@@ -22,6 +23,7 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/kis/token", post(kis_token))
         .route("/api/account/balance", get(account_balance))
         .route("/api/market/price/:symbol", get(market_price))
+        .route("/api/stocks/search", get(search_stocks))
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/orders", get(order_logs).post(place_order))
@@ -50,6 +52,11 @@ struct RiskConfig {
     max_position_ratio: f64,
     daily_max_loss_ratio: f64,
     daily_max_order_count: u32,
+}
+
+#[derive(Deserialize)]
+struct StockSearchQuery {
+    q: String,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -99,6 +106,13 @@ async fn market_price(
     Path(symbol): Path<String>,
 ) -> ApiResult<Json<kis::KisApiResponse>> {
     Ok(Json(kis::get_price(&state, &symbol).await?))
+}
+
+async fn search_stocks(
+    State(state): State<AppState>,
+    Query(query): Query<StockSearchQuery>,
+) -> ApiResult<Json<Vec<Stock>>> {
+    Ok(Json(stocks::search(&state, &query.q)?))
 }
 
 async fn watchlist(State(state): State<AppState>) -> ApiResult<Json<Vec<WatchlistItem>>> {

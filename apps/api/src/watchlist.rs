@@ -5,6 +5,7 @@ use std::{fs, path::Path};
 use crate::{
     error::{ApiError, ApiResult},
     state::AppState,
+    stocks,
 };
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -15,7 +16,8 @@ pub struct WatchlistItem {
 
 #[derive(Deserialize)]
 pub struct WatchlistItemInput {
-    pub symbol: String,
+    pub query: Option<String>,
+    pub symbol: Option<String>,
     pub name: Option<String>,
 }
 
@@ -24,15 +26,30 @@ pub fn list(state: &AppState) -> ApiResult<Vec<WatchlistItem>> {
 }
 
 pub fn add(state: &AppState, input: WatchlistItemInput) -> ApiResult<Vec<WatchlistItem>> {
-    let symbol = normalize_symbol(&input.symbol)?;
+    let stock = match input.query.as_deref() {
+        Some(query) if !query.trim().is_empty() => stocks::resolve_one(state, query)?,
+        _ => {
+            let symbol = input.symbol.as_deref().ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        code: "missing_stock_query".to_string(),
+                        message: "Stock name or 6 digit code is required.".to_string(),
+                    }),
+                )
+            })?;
+            stocks::resolve_one(state, symbol)?
+        }
+    };
+    let symbol = stock.symbol;
     let mut items = read_watchlist(&state.config.watchlist_path)?;
 
     if let Some(existing) = items.iter_mut().find(|item| item.symbol == symbol) {
-        existing.name = input.name.unwrap_or_else(|| symbol.clone());
+        existing.name = input.name.unwrap_or(stock.name);
     } else {
         items.push(WatchlistItem {
             symbol: symbol.clone(),
-            name: input.name.unwrap_or(symbol),
+            name: input.name.unwrap_or(stock.name),
         });
     }
 
