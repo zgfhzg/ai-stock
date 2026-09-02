@@ -57,9 +57,12 @@ docker compose up --build
 - `GET /api/watchlist`: 관심종목 목록 조회
 - `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "symbol": "005930", "name": "삼성전자" }`
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
+- `POST /api/orders`: 국내주식 현금 지정가 주문
+- `GET /api/orders`: 최근 주문 로그 조회
 
 참고:
 
 - 한국투자증권 접근토큰발급(P): `POST /oauth2/tokenP`
 - 국내주식 현재가: `GET /uapi/domestic-stock/v1/quotations/inquire-price`
 - 국내주식 잔고조회: `GET /uapi/domestic-stock/v1/trading/inquire-balance`
+- 국내주식 현금주문: `POST /uapi/domestic-stock/v1/trading/order-cash`

@@ -1,6 +1,7 @@
 mod config;
 mod error;
 mod kis;
+mod orders;
 mod routes;
 mod state;
 mod strategy;

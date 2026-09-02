@@ -150,6 +150,55 @@ pub async fn get_price(state: &AppState, symbol: &str) -> ApiResult<KisApiRespon
     Ok(to_kis_response(value))
 }
 
+pub async fn place_cash_order(
+    state: &AppState,
+    side: &str,
+    symbol: &str,
+    quantity: u32,
+    price: u64,
+) -> ApiResult<KisApiResponse> {
+    ensure_kis_configured(&state.config)?;
+    ensure_account_configured(&state.config)?;
+
+    let tr_id = match (state.config.trading_mode.as_str(), side) {
+        ("live" | "real", "buy") => "TTTC0012U",
+        ("live" | "real", "sell") => "TTTC0011U",
+        (_, "buy") => "VTTC0012U",
+        (_, "sell") => "VTTC0011U",
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "invalid_order_side".to_string(),
+                    message: "Order side must be buy or sell.".to_string(),
+                }),
+            ));
+        }
+    };
+
+    let body = serde_json::json!({
+        "CANO": state.config.kis_account_no,
+        "ACNT_PRDT_CD": state.config.kis_account_product_code,
+        "PDNO": symbol,
+        "ORD_DVSN": "00",
+        "ORD_QTY": quantity.to_string(),
+        "ORD_UNPR": price.to_string(),
+        "EXCG_ID_DVSN_CD": "KRX",
+        "SLL_TYPE": if side == "sell" { "01" } else { "" },
+        "CNDT_PRIC": ""
+    });
+
+    let value = kis_post(
+        state,
+        "/uapi/domestic-stock/v1/trading/order-cash",
+        tr_id,
+        body,
+    )
+    .await?;
+
+    Ok(to_kis_response(value))
+}
+
 pub fn token_status(token: AccessToken) -> TokenStatus {
     TokenStatus {
         status: "ok".to_string(),
@@ -213,6 +262,25 @@ async fn kis_get(
         .header("appSecret", state.config.kis_app_secret.as_str())
         .header("tr_id", tr_id)
         .query(params)
+        .send()
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_request_failed", error))?;
+
+    parse_kis_response(response).await
+}
+
+async fn kis_post(state: &AppState, path: &str, tr_id: &str, body: Value) -> ApiResult<Value> {
+    let token = get_access_token(state).await?;
+    let url = format!("{}{}", state.config.kis_base_url, path);
+    let response = state
+        .http
+        .post(url)
+        .header("content-type", "application/json; charset=UTF-8")
+        .header("authorization", format!("Bearer {}", token.value))
+        .header("appKey", state.config.kis_app_key.as_str())
+        .header("appSecret", state.config.kis_app_secret.as_str())
+        .header("tr_id", tr_id)
+        .json(&body)
         .send()
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_request_failed", error))?;

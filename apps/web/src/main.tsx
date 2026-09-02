@@ -43,6 +43,17 @@ type DashboardData = {
   quotes: Record<string, KisApiResponse>;
 };
 
+type OrderResponse = {
+  accepted: boolean;
+  mode: string;
+  side: string;
+  symbol: string;
+  quantity: number;
+  price: number;
+  order_amount_krw: number;
+  kis: KisApiResponse;
+};
+
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ||
   `${window.location.protocol}//${window.location.hostname}:8080`;
@@ -56,6 +67,12 @@ function App() {
   const [watchlist, setWatchlist] = React.useState<WatchlistItem[]>([]);
   const [symbolInput, setSymbolInput] = React.useState("");
   const [nameInput, setNameInput] = React.useState("");
+  const [orderSymbol, setOrderSymbol] = React.useState("005930");
+  const [orderSide, setOrderSide] = React.useState("buy");
+  const [orderQuantity, setOrderQuantity] = React.useState("1");
+  const [orderPrice, setOrderPrice] = React.useState("");
+  const [orderResult, setOrderResult] = React.useState<OrderResponse | null>(null);
+  const [orderLogs, setOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const [error, setError] = React.useState<string | null>(null);
   const accountSummary = dashboardData.balance?.output2?.[0];
 
@@ -87,8 +104,13 @@ function App() {
       .then(async ([balance, items]) => {
         const quotes = await loadQuotes(items);
         setWatchlist(items);
+        if (items[0] && orderSymbol === "005930") {
+          setOrderSymbol(items[0].symbol);
+        }
         setDashboardData({ balance, quotes });
+        return fetchJson<Array<Record<string, unknown>>>("/api/orders");
       })
+      .then(setOrderLogs)
       .catch(() => setError("한국투자증권 데이터를 불러오지 못했습니다."));
   }
 
@@ -122,6 +144,29 @@ function App() {
         setDashboardData((current) => ({ ...current, quotes }));
       })
       .catch(() => setError("관심종목을 삭제하지 못했습니다."));
+  }
+
+  function handlePlaceOrder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setOrderResult(null);
+
+    fetchJson<OrderResponse>("/api/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        side: orderSide,
+        symbol: orderSymbol,
+        quantity: Number(orderQuantity),
+        price: Number(orderPrice),
+      }),
+    })
+      .then((result) => {
+        setOrderResult(result);
+        return fetchJson<Array<Record<string, unknown>>>("/api/orders");
+      })
+      .then(setOrderLogs)
+      .catch(() => setError("주문을 실행하지 못했습니다. 수량, 가격, 주문 한도를 확인하세요."));
   }
 
   return (
@@ -226,6 +271,70 @@ function App() {
 
           <div className="panel wide">
             <div className="panel-header">
+              <h2>수동 모의 주문</h2>
+              <span>지정가 전용</span>
+            </div>
+            <form className="order-form" onSubmit={handlePlaceOrder}>
+              <select aria-label="매수 매도" value={orderSide} onChange={(event) => setOrderSide(event.target.value)}>
+                <option value="buy">매수</option>
+                <option value="sell">매도</option>
+              </select>
+              <select aria-label="주문 종목" value={orderSymbol} onChange={(event) => setOrderSymbol(event.target.value)}>
+                {watchlist.map((item) => (
+                  <option key={item.symbol} value={item.symbol}>{item.name} {item.symbol}</option>
+                ))}
+              </select>
+              <input
+                aria-label="주문 수량"
+                inputMode="numeric"
+                min="1"
+                placeholder="수량"
+                type="number"
+                value={orderQuantity}
+                onChange={(event) => setOrderQuantity(event.target.value)}
+              />
+              <input
+                aria-label="주문 가격"
+                inputMode="numeric"
+                min="1"
+                placeholder="지정가"
+                type="number"
+                value={orderPrice}
+                onChange={(event) => setOrderPrice(event.target.value)}
+              />
+              <button type="submit">주문</button>
+            </form>
+            <div className="order-meta">
+              <span>예상 주문금액</span>
+              <strong>{formatKrw(Number(orderQuantity || 0) * Number(orderPrice || 0))}</strong>
+            </div>
+            {orderResult ? (
+              <div className={orderResult.accepted ? "notice success" : "notice"}>
+                {orderResult.kis.msg1 ?? "주문 응답을 받았습니다."}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
+              <h2>주문 로그</h2>
+              <span>최근 50건</span>
+            </div>
+            {orderLogs.length > 0 ? (
+              <div className="order-log-list">
+                {orderLogs.slice(0, 5).map((log, index) => (
+                  <div className="order-log-row" key={index}>
+                    <span>{formatOrderLog(log)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">아직 주문 로그가 없습니다.</div>
+            )}
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
               <h2>리스크 제한</h2>
               <span>기본 보호장치</span>
             </div>
@@ -291,6 +400,17 @@ function formatSignedChange(value?: string, rate?: string) {
   const change = Number(value);
   const prefix = change > 0 ? "+" : "";
   return `전일 대비 ${prefix}${formatKrwText(value)} (${prefix}${rate}%)`;
+}
+
+function formatOrderLog(log: Record<string, unknown>) {
+  const response = log.response as OrderResponse | undefined;
+  if (!response) {
+    return "주문 로그를 표시할 수 없습니다.";
+  }
+
+  const side = response.side === "buy" ? "매수" : "매도";
+  const status = response.accepted ? "접수" : "거절";
+  return `${status} · ${side} ${response.symbol} ${response.quantity}주 @ ${formatKrw(response.price)}`;
 }
 
 function loadQuotes(items: WatchlistItem[]) {

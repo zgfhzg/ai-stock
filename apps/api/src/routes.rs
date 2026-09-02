@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
+    orders::{self, OrderRequest, OrderResponse},
     state::AppState,
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
     watchlist::{self, WatchlistItem, WatchlistItemInput},
@@ -23,6 +24,7 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/market/price/:symbol", get(market_price))
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
+        .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/ai/proposal", post(proposal))
 }
 
@@ -115,6 +117,17 @@ async fn remove_watchlist_item(
     Path(symbol): Path<String>,
 ) -> ApiResult<Json<Vec<WatchlistItem>>> {
     Ok(Json(watchlist::remove(&state, &symbol)?))
+}
+
+async fn order_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    Ok(Json(orders::list_logs(&state)?))
+}
+
+async fn place_order(
+    State(state): State<AppState>,
+    Json(request): Json<OrderRequest>,
+) -> ApiResult<Json<OrderResponse>> {
+    Ok(Json(orders::place(&state, request).await?))
 }
 
 async fn proposal(

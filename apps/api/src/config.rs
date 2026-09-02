@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub kis_base_url: String,
     pub api_port: u16,
     pub watchlist_path: String,
+    pub order_log_path: String,
     pub max_order_amount_krw: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
@@ -37,6 +38,7 @@ impl AppConfig {
             ),
             api_port: read_env("API_PORT", "8080").parse().unwrap_or(8080),
             watchlist_path: read_env("WATCHLIST_PATH", "../../data/watchlist.json"),
+            order_log_path: read_env("ORDER_LOG_PATH", "../../data/orders.jsonl"),
             max_order_amount_krw: read_env("MAX_ORDER_AMOUNT_KRW", "100000")
                 .parse()
                 .unwrap_or(100000),
