@@ -510,11 +510,31 @@ function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return fetch(`${apiBaseUrl}${path}`, init).then((response) => {
     if (!response.ok) {
       return response.text().then((text) => {
-        throw new Error(text || `Request failed: ${path}`);
+        throw new Error(extractErrorMessage(text) || `Request failed: ${path}`);
       });
     }
     return response.json();
   });
+}
+
+function extractErrorMessage(text: string): string {
+  if (!text) {
+    return "";
+  }
+
+  try {
+    const payload = JSON.parse(text) as { message?: string; msg1?: string };
+    if (payload.msg1) {
+      return payload.msg1;
+    }
+    if (payload.message) {
+      return extractErrorMessage(payload.message) || payload.message;
+    }
+  } catch {
+    return text.length > 80 ? "현재가 조회 제한으로 잠시 후 다시 시도해 주세요." : text;
+  }
+
+  return text.length > 80 ? "현재가 조회 제한으로 잠시 후 다시 시도해 주세요." : text;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);

@@ -283,8 +283,8 @@ h2 {
 
 .order-form {
   display: grid;
-  grid-template-columns: minmax(96px, 0.8fr) minmax(180px, 1.4fr) minmax(96px, 0.8fr) minmax(112px, 0.9fr) 88px;
-  gap: 10px;
+  grid-template-columns: 84px minmax(140px, 1fr) 78px 96px 68px;
+  gap: 8px;
 }
 
 .watchlist-form input,
@@ -360,7 +360,7 @@ h2 {
 }
 
 .order-form button {
-  width: 88px;
+  width: 68px;
   background: #245f45;
   color: #ffffff;
   border-color: #245f45;
@@ -378,7 +378,7 @@ h2 {
 
 .quote-row {
   display: grid;
-  grid-template-columns: minmax(112px, 1fr) minmax(112px, 0.9fr) 40px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 40px;
   gap: 12px;
   align-items: center;
   min-height: 64px;
@@ -401,7 +401,7 @@ h2 {
 .quote-row strong,
 .quote-row span {
   max-width: 100%;
-  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .quote-row span {
@@ -409,7 +409,17 @@ h2 {
   font-size: 13px;
 }
 
+.quote-main strong,
+.quote-main span,
+.quote-price span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .quote-price strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -466,13 +476,6 @@ h2 {
     grid-template-columns: 1fr 1fr;
   }
 
-  .order-form {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .order-form button {
-    width: 100%;
-  }
 }
 
 @media (max-width: 640px) {
@@ -511,6 +514,10 @@ h2 {
 
   .stock-suggestions button {
     display: grid;
+  }
+
+  .order-form {
+    grid-template-columns: 72px minmax(112px, 1fr) 64px 84px 60px;
   }
 
   .stock-suggestions span {
