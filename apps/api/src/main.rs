@@ -1,3 +1,4 @@
+mod auto_trading;
 mod config;
 mod error;
 mod kis;

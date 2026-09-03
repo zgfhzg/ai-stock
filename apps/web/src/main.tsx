@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Activity, Bot, CircleDollarSign, Plus, ShieldCheck, Trash2, Wifi } from "lucide-react";
+import { Activity, Bot, CircleDollarSign, PlayCircle, Plus, ShieldCheck, Trash2, Wifi } from "lucide-react";
 import "./styles.css";
 
 type SystemStatus = {
@@ -59,6 +59,33 @@ type OrderResponse = {
   kis: KisApiResponse;
 };
 
+type AutoDecision = {
+  symbol: string;
+  name: string;
+  action: string;
+  confidence: number;
+  reason: string;
+  current_price?: number | null;
+  previous_change?: number | null;
+  previous_change_rate?: string | null;
+  order_submitted: boolean;
+  skip_reason?: string | null;
+};
+
+type AutoRunResponse = {
+  mode: string;
+  executed: boolean;
+  summary: {
+    total: number;
+    buy: number;
+    sell: number;
+    hold: number;
+    skipped: number;
+    orders: number;
+  };
+  decisions: AutoDecision[];
+};
+
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ||
   `${window.location.protocol}//${window.location.hostname}:8080`;
@@ -79,6 +106,8 @@ function App() {
   const [orderPrice, setOrderPrice] = React.useState("");
   const [orderResult, setOrderResult] = React.useState<OrderResponse | null>(null);
   const [orderLogs, setOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
+  const [autoRun, setAutoRun] = React.useState<AutoRunResponse | null>(null);
+  const [autoRunning, setAutoRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const accountSummary = dashboardData.balance?.output2?.[0];
 
@@ -208,6 +237,20 @@ function App() {
       })
       .then(setOrderLogs)
       .catch(() => setError("주문을 실행하지 못했습니다. 수량, 가격, 주문 한도를 확인하세요."));
+  }
+
+  function handleRunAutoTrading() {
+    setError(null);
+    setAutoRunning(true);
+
+    fetchJson<AutoRunResponse>("/api/auto-trading/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ execute: false }),
+    })
+      .then(setAutoRun)
+      .catch(() => setError("자동매매 판단을 실행하지 못했습니다. API와 전략 엔진 상태를 확인하세요."))
+      .finally(() => setAutoRunning(false));
   }
 
   return (
@@ -400,10 +443,37 @@ function App() {
 
           <div className="panel wide">
             <div className="panel-header">
-              <h2>AI 판단 로그</h2>
-              <span>추천 전용</span>
+              <h2>자동매매 실행</h2>
+              <span>{autoRun ? `${autoRun.summary.total}개 판단` : "추천 전용"}</span>
             </div>
-            <div className="log-line">AI는 아직 직접 주문하지 않습니다. 전략 검증 후 승인 흐름을 붙입니다.</div>
+            <div className="auto-trade-toolbar">
+              <button type="button" onClick={handleRunAutoTrading} disabled={autoRunning}>
+                <PlayCircle size={18} />
+                <span>{autoRunning ? "판단 중" : "실행 1회"}</span>
+              </button>
+              <div>
+                <strong>{autoRun ? formatAutoSummary(autoRun) : "아직 실행 전"}</strong>
+                <span>기본 모드는 추천만 기록하고 주문은 넣지 않습니다.</span>
+              </div>
+            </div>
+            {autoRun ? (
+              <div className="auto-decision-list">
+                {autoRun.decisions.map((decision) => (
+                  <article className="auto-decision-row" key={decision.symbol}>
+                    <div>
+                      <strong>{decision.name}</strong>
+                      <span>{decision.symbol} · {formatKrw(decision.current_price ?? undefined)}</span>
+                    </div>
+                    <div>
+                      <strong>{formatAction(decision.action)} · {Math.round(decision.confidence * 100)}%</strong>
+                      <span>{decision.reason}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">관심종목 기준으로 현재가를 확인하고 AI 판단을 한 번 실행합니다.</div>
+            )}
           </div>
         </section>
       </section>
@@ -467,6 +537,23 @@ function formatOrderLog(log: Record<string, unknown>) {
   const side = response.side === "buy" ? "매수" : "매도";
   const status = response.accepted ? "접수" : "거절";
   return `${status} · ${side} ${response.symbol} ${response.quantity}주 @ ${formatKrw(response.price)}`;
+}
+
+function formatAutoSummary(run: AutoRunResponse) {
+  return `관망 ${run.summary.hold} · 매수 ${run.summary.buy} · 매도 ${run.summary.sell} · 주문 ${run.summary.orders}`;
+}
+
+function formatAction(action: string) {
+  if (action === "buy") {
+    return "매수";
+  }
+  if (action === "sell") {
+    return "매도";
+  }
+  if (action === "skip") {
+    return "건너뜀";
+  }
+  return "관망";
 }
 
 async function loadQuotes(items: WatchlistItem[]) {

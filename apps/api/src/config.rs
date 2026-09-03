@@ -16,6 +16,9 @@ pub struct AppConfig {
     pub watchlist_path: String,
     pub stock_catalog_path: String,
     pub order_log_path: String,
+    pub auto_trade_mode: String,
+    pub auto_decision_log_path: String,
+    pub auto_min_confidence: f64,
     pub max_order_amount_krw: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
@@ -41,6 +44,14 @@ impl AppConfig {
             watchlist_path: read_env("WATCHLIST_PATH", "../../data/watchlist.json"),
             stock_catalog_path: read_env("STOCK_CATALOG_PATH", "../../data/stocks.json"),
             order_log_path: read_env("ORDER_LOG_PATH", "../../data/orders.jsonl"),
+            auto_trade_mode: read_env("AUTO_TRADE_MODE", "recommend"),
+            auto_decision_log_path: read_env(
+                "AUTO_DECISION_LOG_PATH",
+                "../../data/auto-decisions.jsonl",
+            ),
+            auto_min_confidence: read_env("AUTO_MIN_CONFIDENCE", "0.7")
+                .parse()
+                .unwrap_or(0.7),
             max_order_amount_krw: read_env("MAX_ORDER_AMOUNT_KRW", "100000")
                 .parse()
                 .unwrap_or(100000),

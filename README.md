@@ -60,6 +60,8 @@ docker compose up --build
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
 - `POST /api/orders`: 국내주식 현금 지정가 주문
 - `GET /api/orders`: 최근 주문 로그 조회
+- `POST /api/auto-trading/run`: 관심종목 기준 자동매매 판단 1회 실행
+- `GET /api/auto-trading/runs`: 최근 자동매매 판단 로그 조회
 
 종목 검색 목록은 `data/stocks.json`을 사용합니다. 공식 KIS 종목 마스터 기준으로 갱신하려면 아래 명령을 실행합니다.
 

@@ -13,5 +13,6 @@ data/sqlite/*.db
 data/sqlite/*.db-*
 data/logs/*.log
 data/orders.jsonl
+data/auto-decisions.jsonl
 
 .DS_Store

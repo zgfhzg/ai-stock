@@ -6,6 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    auto_trading::{self, AutoRunRequest, AutoRunResponse},
     error::ApiResult,
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
@@ -27,6 +28,8 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/orders", get(order_logs).post(place_order))
+        .route("/api/auto-trading/run", post(run_auto_trading))
+        .route("/api/auto-trading/runs", get(auto_trading_logs))
         .route("/api/ai/proposal", post(proposal))
 }
 
@@ -142,6 +145,19 @@ async fn place_order(
     Json(request): Json<OrderRequest>,
 ) -> ApiResult<Json<OrderResponse>> {
     Ok(Json(orders::place(&state, request).await?))
+}
+
+async fn run_auto_trading(
+    State(state): State<AppState>,
+    Json(request): Json<AutoRunRequest>,
+) -> ApiResult<Json<AutoRunResponse>> {
+    Ok(Json(auto_trading::run_once(&state, request).await?))
+}
+
+async fn auto_trading_logs(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    Ok(Json(auto_trading::list_logs(&state)?))
 }
 
 async fn proposal(

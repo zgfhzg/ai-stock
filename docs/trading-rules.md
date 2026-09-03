@@ -5,6 +5,8 @@
 - 기본 모드는 모의투자입니다.
 - 실전 주문은 `ENABLE_LIVE_TRADING=true`일 때만 허용합니다.
 - AI는 초기에는 추천만 생성합니다.
+- `AUTO_TRADE_MODE=recommend`에서는 AI 판단만 기록하고 주문하지 않습니다.
+- `AUTO_TRADE_MODE=paper_auto`와 실행 요청이 함께 들어온 경우에만 모의 자동 주문을 시도합니다.
 - 주문 실행 전에는 항상 리스크 체크를 통과해야 합니다.
 
 ## 리스크 제한
