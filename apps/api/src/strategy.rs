@@ -12,6 +12,9 @@ pub struct StrategyHealth {
 pub struct ProposalRequest {
     pub symbol: String,
     pub name: Option<String>,
+    pub current_price: Option<u64>,
+    pub previous_change: Option<i64>,
+    pub previous_change_rate: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize)]

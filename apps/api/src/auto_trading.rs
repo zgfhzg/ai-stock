@@ -148,12 +148,18 @@ async fn build_decision(
         .and_then(|value| value.get("prdy_ctrt"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let previous_change_rate_number = previous_change_rate
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok());
 
     let proposal = strategy::proposal(
         state,
         &ProposalRequest {
             symbol: item.symbol.clone(),
             name: Some(item.name.clone()),
+            current_price,
+            previous_change,
+            previous_change_rate: previous_change_rate_number,
         },
     )
     .await;
