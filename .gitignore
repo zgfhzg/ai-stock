@@ -14,5 +14,6 @@ data/sqlite/*.db-*
 data/logs/*.log
 data/orders.jsonl
 data/auto-decisions.jsonl
+data/kis-token.json
 
 .DS_Store

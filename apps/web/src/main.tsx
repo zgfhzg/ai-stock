@@ -244,17 +244,22 @@ function App() {
   }, [stockQuery]);
 
   function loadDashboardData() {
-    Promise.all([
+    Promise.allSettled([
       fetchJson<KisApiResponse>("/api/account/balance"),
       fetchJson<WatchlistItem[]>("/api/watchlist"),
     ])
-      .then(async ([balance, items]) => {
+      .then(async ([balanceResult, watchlistResult]) => {
+        const balance = balanceResult.status === "fulfilled" ? balanceResult.value : null;
+        const items = watchlistResult.status === "fulfilled" ? watchlistResult.value : [];
         const { quotes, quoteErrors } = await loadQuotes(items);
         setWatchlist(items);
         if (items[0] && orderSymbol === "005930") {
           setOrderSymbol(items[0].symbol);
         }
         setDashboardData({ balance, quotes, quoteErrors });
+        if (balanceResult.status === "rejected" || watchlistResult.status === "rejected") {
+          setError("일부 데이터를 불러오지 못했습니다. 조회 가능한 정보는 계속 표시합니다.");
+        }
         return fetchJson<Array<Record<string, unknown>>>("/api/orders");
       })
       .then(setOrderLogs)
@@ -1064,7 +1069,7 @@ async function loadQuotes(items: WatchlistItem[]) {
 
   for (const [index, item] of items.entries()) {
     if (index > 0) {
-      await delay(450);
+      await delay(1200);
     }
 
     try {

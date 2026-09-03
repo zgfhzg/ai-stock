@@ -2,7 +2,11 @@ use axum::{http::StatusCode, Json};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use crate::{
     config::AppConfig,
@@ -40,6 +44,13 @@ struct TokenResponse {
     access_token_token_expired: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct PersistedToken {
+    access_token: String,
+    expires_at: Option<String>,
+    fetched_at_unix: u64,
+}
+
 pub struct AccessToken {
     pub value: String,
     pub expires_at: Option<String>,
@@ -59,6 +70,18 @@ pub async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
         }
     }
 
+    if let Some(token) = read_persisted_token(&state.config.kis_token_cache_path) {
+        let access_token = token.access_token.clone();
+        let expires_at = token.expires_at.clone();
+        *token_guard = Some(token);
+
+        return Ok(AccessToken {
+            value: access_token,
+            expires_at,
+            cached: true,
+        });
+    }
+
     let url = format!("{}/oauth2/tokenP", state.config.kis_base_url);
     let body = serde_json::json!({
         "grant_type": "client_credentials",
@@ -75,26 +98,88 @@ pub async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_token_request_failed", error))?;
 
-    let response = response
-        .error_for_status()
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_token_http_error", error))?;
+    let status = response.status();
+    let token_text = response.text().await.map_err(|error| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "kis_token_response_read_failed",
+            error,
+        )
+    })?;
 
-    let token = response
-        .json::<TokenResponse>()
-        .await
+    if !status.is_success() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                code: "kis_token_http_error".to_string(),
+                message: token_text,
+            }),
+        ));
+    }
+
+    let token = serde_json::from_str::<TokenResponse>(&token_text)
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_token_parse_failed", error))?;
 
-    *token_guard = Some(CachedToken {
+    let cached_token = CachedToken {
         access_token: token.access_token.clone(),
         expires_at: token.access_token_token_expired.clone(),
         fetched_at: Instant::now(),
-    });
+    };
+    write_persisted_token(&state.config.kis_token_cache_path, &cached_token);
+
+    *token_guard = Some(cached_token);
 
     Ok(AccessToken {
         value: token.access_token,
         expires_at: token.access_token_token_expired,
         cached: false,
     })
+}
+
+fn read_persisted_token(path: &str) -> Option<CachedToken> {
+    let content = fs::read_to_string(path).ok()?;
+    let token = serde_json::from_str::<PersistedToken>(&content).ok()?;
+    let now = unix_now()?;
+    let age = now.checked_sub(token.fetched_at_unix)?;
+
+    if age >= 60 * 60 * 23 {
+        return None;
+    }
+
+    Some(CachedToken {
+        access_token: token.access_token,
+        expires_at: token.expires_at,
+        fetched_at: Instant::now()
+            .checked_sub(Duration::from_secs(age))
+            .unwrap_or_else(Instant::now),
+    })
+}
+
+fn write_persisted_token(path: &str, token: &CachedToken) {
+    let Some(fetched_at_unix) = unix_now() else {
+        return;
+    };
+    let persisted = PersistedToken {
+        access_token: token.access_token.clone(),
+        expires_at: token.expires_at.clone(),
+        fetched_at_unix,
+    };
+    let Ok(content) = serde_json::to_string_pretty(&persisted) else {
+        return;
+    };
+
+    if let Some(parent) = Path::new(path).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let _ = fs::write(path, content);
+}
+
+fn unix_now() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 pub async fn get_balance(state: &AppState) -> ApiResult<KisApiResponse> {

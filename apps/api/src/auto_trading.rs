@@ -73,7 +73,7 @@ pub async fn run_once(state: &AppState, request: AutoRunRequest) -> ApiResult<Au
 
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1200)).await;
         }
 
         let decision = build_decision(state, item, execute).await?;
