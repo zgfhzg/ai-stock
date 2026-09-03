@@ -12,13 +12,21 @@ pub struct AppConfig {
     pub kis_account_no: String,
     pub kis_account_product_code: String,
     pub kis_base_url: String,
+    pub crypto_exchange: String,
+    pub crypto_api_key: String,
+    pub crypto_api_secret: String,
+    pub crypto_spot_base_url: String,
+    pub crypto_futures_base_url: String,
+    pub crypto_live_trading_enabled: bool,
     pub api_port: u16,
     pub watchlist_path: String,
     pub stock_catalog_path: String,
     pub order_log_path: String,
+    pub crypto_order_log_path: String,
     pub auto_trade_mode: String,
     pub auto_decision_log_path: String,
     pub auto_min_confidence: f64,
+    pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
@@ -40,10 +48,23 @@ impl AppConfig {
                 "KIS_BASE_URL",
                 "https://openapivts.koreainvestment.com:29443",
             ),
+            crypto_exchange: read_env("CRYPTO_EXCHANGE", "Binance"),
+            crypto_api_key: read_env("CRYPTO_API_KEY", ""),
+            crypto_api_secret: read_env("CRYPTO_API_SECRET", ""),
+            crypto_spot_base_url: read_env("CRYPTO_SPOT_BASE_URL", "https://api.binance.com"),
+            crypto_futures_base_url: read_env(
+                "CRYPTO_FUTURES_BASE_URL",
+                "https://fapi.binance.com",
+            ),
+            crypto_live_trading_enabled: read_env("ENABLE_CRYPTO_LIVE_TRADING", "false") == "true",
             api_port: read_env("API_PORT", "8080").parse().unwrap_or(8080),
             watchlist_path: read_env("WATCHLIST_PATH", "../../data/watchlist.json"),
             stock_catalog_path: read_env("STOCK_CATALOG_PATH", "../../data/stocks.json"),
             order_log_path: read_env("ORDER_LOG_PATH", "../../data/orders.jsonl"),
+            crypto_order_log_path: read_env(
+                "CRYPTO_ORDER_LOG_PATH",
+                "../../data/crypto-orders.jsonl",
+            ),
             auto_trade_mode: read_env("AUTO_TRADE_MODE", "recommend"),
             auto_decision_log_path: read_env(
                 "AUTO_DECISION_LOG_PATH",
@@ -52,6 +73,9 @@ impl AppConfig {
             auto_min_confidence: read_env("AUTO_MIN_CONFIDENCE", "0.7")
                 .parse()
                 .unwrap_or(0.7),
+            max_crypto_order_amount_usdt: read_env("MAX_CRYPTO_ORDER_AMOUNT_USDT", "100")
+                .parse()
+                .unwrap_or(100.0),
             max_order_amount_krw: read_env("MAX_ORDER_AMOUNT_KRW", "100000")
                 .parse()
                 .unwrap_or(100000),

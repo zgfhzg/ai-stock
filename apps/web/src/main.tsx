@@ -1,6 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Activity, Bot, CircleDollarSign, PlayCircle, Plus, ShieldCheck, Trash2, Wifi } from "lucide-react";
+import {
+  Activity,
+  Bot,
+  CircleDollarSign,
+  Coins,
+  PlayCircle,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  Wifi,
+} from "lucide-react";
 import "./styles.css";
 
 type SystemStatus = {
@@ -12,6 +22,14 @@ type SystemStatus = {
     base_url: string;
     account_configured: boolean;
   };
+  crypto: {
+    exchange: string;
+    spot_base_url: string;
+    futures_base_url: string;
+    api_key_configured: boolean;
+    api_secret_configured: boolean;
+    live_trading_enabled: boolean;
+  };
   strategy: {
     status: string;
     service: string;
@@ -21,6 +39,7 @@ type SystemStatus = {
     max_position_ratio: number;
     daily_max_loss_ratio: number;
     daily_max_order_count: number;
+    max_crypto_order_amount_usdt: number;
   };
 };
 
@@ -91,11 +110,52 @@ type AutoRunLog = {
   response: AutoRunResponse;
 };
 
+type MarketTab = "stocks" | "crypto-spot" | "crypto-futures";
+
+type CryptoInstrument = {
+  symbol: string;
+  name: string;
+  venue: string;
+  market_type: "spot" | "futures";
+  quote_asset: string;
+  max_leverage?: number | null;
+};
+
+type CryptoQuote = {
+  symbol: string;
+  market_type: "spot" | "futures";
+  venue: string;
+  last_price: string;
+  price_change: string;
+  price_change_percent: string;
+  high_price: string;
+  low_price: string;
+  volume: string;
+  quote_volume?: string | null;
+  trade_count?: number | null;
+};
+
+type CryptoOrderResponse = {
+  accepted: boolean;
+  mode: string;
+  venue: string;
+  market_type: string;
+  side: string;
+  symbol: string;
+  quantity: number;
+  price: number;
+  notional_usdt: number;
+  leverage?: number | null;
+  status: string;
+  message: string;
+};
+
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ||
   `${window.location.protocol}//${window.location.hostname}:8080`;
 
 function App() {
+  const [activeMarket, setActiveMarket] = React.useState<MarketTab>("stocks");
   const [status, setStatus] = React.useState<SystemStatus | null>(null);
   const [dashboardData, setDashboardData] = React.useState<DashboardData>({
     balance: null,
@@ -115,7 +175,18 @@ function App() {
   const [autoRunLogs, setAutoRunLogs] = React.useState<AutoRunLog[]>([]);
   const [autoRunning, setAutoRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [cryptoInstruments, setCryptoInstruments] = React.useState<CryptoInstrument[]>([]);
+  const [cryptoQuotes, setCryptoQuotes] = React.useState<Record<string, CryptoQuote>>({});
+  const [cryptoQuoteErrors, setCryptoQuoteErrors] = React.useState<Record<string, string>>({});
+  const [cryptoOrderSymbol, setCryptoOrderSymbol] = React.useState("BTCUSDT");
+  const [cryptoOrderSide, setCryptoOrderSide] = React.useState("buy");
+  const [cryptoOrderQuantity, setCryptoOrderQuantity] = React.useState("0.001");
+  const [cryptoOrderPrice, setCryptoOrderPrice] = React.useState("");
+  const [cryptoOrderLeverage, setCryptoOrderLeverage] = React.useState("1");
+  const [cryptoOrderResult, setCryptoOrderResult] = React.useState<CryptoOrderResponse | null>(null);
+  const [cryptoOrderLogs, setCryptoOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const accountSummary = dashboardData.balance?.output2?.[0];
+  const cryptoMarketType = activeMarket === "crypto-futures" ? "futures" : "spot";
 
   React.useEffect(() => {
     fetch(`${apiBaseUrl}/api/status`)
@@ -137,6 +208,14 @@ function App() {
 
     loadDashboardData();
   }, [status]);
+
+  React.useEffect(() => {
+    if (activeMarket === "stocks") {
+      return;
+    }
+
+    loadCryptoMarketData(cryptoMarketType);
+  }, [activeMarket]);
 
   React.useEffect(() => {
     const query = stockQuery.trim();
@@ -269,6 +348,50 @@ function App() {
       .catch(() => setAutoRunLogs([]));
   }
 
+  function loadCryptoMarketData(marketType: "spot" | "futures") {
+    setError(null);
+
+    fetchJson<CryptoInstrument[]>(`/api/crypto/instruments/${marketType}`)
+      .then(async (items) => {
+        const { quotes, quoteErrors } = await loadCryptoQuotes(marketType, items);
+        setCryptoInstruments(items);
+        setCryptoQuotes(quotes);
+        setCryptoQuoteErrors(quoteErrors);
+        if (items[0]) {
+          setCryptoOrderSymbol(items[0].symbol);
+          setCryptoOrderSide(marketType === "futures" ? "long" : "buy");
+        }
+        return fetchJson<Array<Record<string, unknown>>>("/api/crypto/orders");
+      })
+      .then(setCryptoOrderLogs)
+      .catch(() => setError("코인/선물 시장 데이터를 불러오지 못했습니다."));
+  }
+
+  function handlePlaceCryptoOrder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setCryptoOrderResult(null);
+
+    fetchJson<CryptoOrderResponse>("/api/crypto/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market_type: cryptoMarketType,
+        side: cryptoOrderSide,
+        symbol: cryptoOrderSymbol,
+        quantity: Number(cryptoOrderQuantity),
+        price: Number(cryptoOrderPrice),
+        leverage: cryptoMarketType === "futures" ? Number(cryptoOrderLeverage) : undefined,
+      }),
+    })
+      .then((result) => {
+        setCryptoOrderResult(result);
+        return fetchJson<Array<Record<string, unknown>>>("/api/crypto/orders");
+      })
+      .then(setCryptoOrderLogs)
+      .catch(() => setError("코인/선물 주문을 기록하지 못했습니다. 수량, 가격, 한도를 확인하세요."));
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -277,21 +400,33 @@ function App() {
           <span>AI Stock</span>
         </div>
         <nav>
-          <a className="active">대시보드</a>
-          <a>자동매매</a>
-          <a>전략</a>
-          <a>주문 로그</a>
-          <a>설정</a>
+          <button className={activeMarket === "stocks" ? "active" : ""} type="button" onClick={() => setActiveMarket("stocks")}>
+            주식
+          </button>
+          <button className={activeMarket === "crypto-spot" ? "active" : ""} type="button" onClick={() => setActiveMarket("crypto-spot")}>
+            코인 현물
+          </button>
+          <button className={activeMarket === "crypto-futures" ? "active" : ""} type="button" onClick={() => setActiveMarket("crypto-futures")}>
+            코인 선물
+          </button>
+          <button type="button">전략</button>
+          <button type="button">설정</button>
         </nav>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Paper Trading</p>
-            <h1>자동매매 관제판</h1>
+            <p className="eyebrow">{formatMarketEyebrow(activeMarket)}</p>
+            <h1>{formatMarketTitle(activeMarket)}</h1>
           </div>
-          <button className="danger-toggle" type="button">실전 주문 OFF</button>
+          <button className="danger-toggle" type="button">
+            {activeMarket === "stocks"
+              ? "주식 실전 주문 OFF"
+              : status?.crypto.live_trading_enabled
+                ? "코인 실전 주문 ON"
+                : "코인 실전 주문 OFF"}
+          </button>
         </header>
 
         {error ? <div className="notice">{error}</div> : null}
@@ -300,9 +435,14 @@ function App() {
           <Metric icon={<Wifi />} label="API" value={status?.api ?? "확인 중"} />
           <Metric icon={<Bot />} label="AI 전략 엔진" value={status?.strategy.status ?? "확인 중"} />
           <Metric icon={<ShieldCheck />} label="거래 모드" value={status?.trading_mode ?? "확인 중"} />
-          <Metric icon={<Activity />} label="KIS 연동" value={status?.kis?.configured ? "설정됨" : "설정 필요"} />
+          <Metric
+            icon={activeMarket === "stocks" ? <Activity /> : <Coins />}
+            label={activeMarket === "stocks" ? "KIS 연동" : status?.crypto.exchange ?? "거래소"}
+            value={activeMarket === "stocks" ? (status?.kis?.configured ? "설정됨" : "설정 필요") : "공개 시세"}
+          />
         </section>
 
+        {activeMarket === "stocks" ? (
         <section className="content-grid">
           <div className="panel">
             <div className="panel-header">
@@ -520,8 +660,234 @@ function App() {
             )}
           </div>
         </section>
+        ) : (
+          <CryptoWorkspace
+            instruments={cryptoInstruments}
+            marketType={cryptoMarketType}
+            orderLeverage={cryptoOrderLeverage}
+            orderLogs={cryptoOrderLogs}
+            orderPrice={cryptoOrderPrice}
+            orderQuantity={cryptoOrderQuantity}
+            orderResult={cryptoOrderResult}
+            orderSide={cryptoOrderSide}
+            orderSymbol={cryptoOrderSymbol}
+            quoteErrors={cryptoQuoteErrors}
+            quotes={cryptoQuotes}
+            status={status}
+            onOrderLeverageChange={setCryptoOrderLeverage}
+            onOrderPriceChange={setCryptoOrderPrice}
+            onOrderQuantityChange={setCryptoOrderQuantity}
+            onOrderSideChange={setCryptoOrderSide}
+            onOrderSymbolChange={setCryptoOrderSymbol}
+            onRefresh={() => loadCryptoMarketData(cryptoMarketType)}
+            onSubmitOrder={handlePlaceCryptoOrder}
+          />
+        )}
       </section>
     </main>
+  );
+}
+
+function CryptoWorkspace({
+  instruments,
+  marketType,
+  orderLeverage,
+  orderLogs,
+  orderPrice,
+  orderQuantity,
+  orderResult,
+  orderSide,
+  orderSymbol,
+  quoteErrors,
+  quotes,
+  status,
+  onOrderLeverageChange,
+  onOrderPriceChange,
+  onOrderQuantityChange,
+  onOrderSideChange,
+  onOrderSymbolChange,
+  onRefresh,
+  onSubmitOrder,
+}: {
+  instruments: CryptoInstrument[];
+  marketType: "spot" | "futures";
+  orderLeverage: string;
+  orderLogs: Array<Record<string, unknown>>;
+  orderPrice: string;
+  orderQuantity: string;
+  orderResult: CryptoOrderResponse | null;
+  orderSide: string;
+  orderSymbol: string;
+  quoteErrors: Record<string, string>;
+  quotes: Record<string, CryptoQuote>;
+  status: SystemStatus | null;
+  onOrderLeverageChange: (value: string) => void;
+  onOrderPriceChange: (value: string) => void;
+  onOrderQuantityChange: (value: string) => void;
+  onOrderSideChange: (value: string) => void;
+  onOrderSymbolChange: (value: string) => void;
+  onRefresh: () => void;
+  onSubmitOrder: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const selectedQuote = quotes[orderSymbol];
+  const isFutures = marketType === "futures";
+  const notional = Number(orderQuantity || 0) * Number(orderPrice || 0);
+  const maxLeverage = instruments.reduce((max, item) => Math.max(max, item.max_leverage ?? 1), 1);
+
+  return (
+    <section className="content-grid">
+      <div className="panel">
+        <div className="panel-header">
+          <h2>{isFutures ? "선물 마켓" : "코인 마켓"}</h2>
+          <button className="ghost-button" type="button" onClick={onRefresh}>
+            새로고침
+          </button>
+        </div>
+        <div className="crypto-market-list">
+          {instruments.map((instrument) => {
+            const quote = quotes[instrument.symbol];
+            const quoteError = quoteErrors[instrument.symbol];
+            return (
+              <button
+                className={orderSymbol === instrument.symbol ? "crypto-market-row active" : "crypto-market-row"}
+                key={`${instrument.market_type}-${instrument.symbol}`}
+                type="button"
+                onClick={() => {
+                  onOrderSymbolChange(instrument.symbol);
+                  if (quote?.last_price) {
+                    onOrderPriceChange(quote.last_price);
+                  }
+                }}
+              >
+                <div>
+                  <strong>{instrument.name}</strong>
+                  <span>{instrument.symbol} · {instrument.venue}</span>
+                </div>
+                <div>
+                  <strong>{quote ? formatUsdtText(quote.last_price) : "-"}</strong>
+                  <span>{quoteError ?? formatCryptoChange(quote)}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>거래소 연결</h2>
+          <span>{status?.crypto.exchange ?? "Binance"}</span>
+        </div>
+        <dl className="summary-grid">
+          <div><dt>시세 API</dt><dd>{selectedQuote ? "연결됨" : "대기"}</dd></div>
+          <div><dt>API Key</dt><dd>{status?.crypto.api_key_configured ? "설정됨" : "미설정"}</dd></div>
+          <div><dt>실전 주문</dt><dd>{status?.crypto.live_trading_enabled ? "허용" : "차단"}</dd></div>
+          <div><dt>1회 한도</dt><dd>{formatUsdt(status?.risk.max_crypto_order_amount_usdt)}</dd></div>
+        </dl>
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>{isFutures ? "선물 모의 주문" : "코인 현물 모의 주문"}</h2>
+          <span>{isFutures ? "USDT 무기한 · 레버리지 제한" : "지정가 전용"}</span>
+        </div>
+        <form className={isFutures ? "crypto-order-form futures" : "crypto-order-form"} onSubmit={onSubmitOrder}>
+          <select aria-label="주문 방향" value={orderSide} onChange={(event) => onOrderSideChange(event.target.value)}>
+            {isFutures ? (
+              <>
+                <option value="long">롱</option>
+                <option value="short">숏</option>
+              </>
+            ) : (
+              <>
+                <option value="buy">매수</option>
+                <option value="sell">매도</option>
+              </>
+            )}
+          </select>
+          <select aria-label="코인 심볼" value={orderSymbol} onChange={(event) => onOrderSymbolChange(event.target.value)}>
+            {instruments.map((item) => (
+              <option key={`${item.market_type}-order-${item.symbol}`} value={item.symbol}>
+                {item.name} {item.symbol}
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label="주문 수량"
+            inputMode="decimal"
+            min="0"
+            placeholder="수량"
+            step="any"
+            type="number"
+            value={orderQuantity}
+            onChange={(event) => onOrderQuantityChange(event.target.value)}
+          />
+          <input
+            aria-label="주문 가격"
+            inputMode="decimal"
+            min="0"
+            placeholder="USDT 지정가"
+            step="any"
+            type="number"
+            value={orderPrice}
+            onChange={(event) => onOrderPriceChange(event.target.value)}
+          />
+          {isFutures ? (
+            <input
+              aria-label="레버리지"
+              inputMode="numeric"
+              max="20"
+              min="1"
+              placeholder="레버리지"
+              type="number"
+              value={orderLeverage}
+              onChange={(event) => onOrderLeverageChange(event.target.value)}
+            />
+          ) : null}
+          <button type="submit">기록</button>
+        </form>
+        <div className="order-meta">
+          <span>예상 명목금액</span>
+          <strong>{formatUsdt(notional)}</strong>
+        </div>
+        {orderResult ? (
+          <div className={orderResult.accepted ? "notice success" : "notice"}>
+            {orderResult.message}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>{isFutures ? "선물 리스크 제한" : "코인 리스크 제한"}</h2>
+          <span>실거래 전 보호장치</span>
+        </div>
+        <ul className="risk-list compact">
+          <li><span>실전 주문</span><strong>{status?.crypto.live_trading_enabled ? "ON" : "OFF"}</strong></li>
+          <li><span>API 권한</span><strong>{status?.crypto.api_key_configured ? "키 있음" : "읽기 전용"}</strong></li>
+          <li><span>1회 주문 한도</span><strong>{formatUsdt(status?.risk.max_crypto_order_amount_usdt)}</strong></li>
+          <li><span>레버리지</span><strong>{isFutures ? `최대 ${maxLeverage}x` : "사용 안함"}</strong></li>
+        </ul>
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>코인 주문 로그</h2>
+          <span>최근 50건</span>
+        </div>
+        {orderLogs.length > 0 ? (
+          <div className="order-log-list">
+            {orderLogs.slice(0, 5).map((log, index) => (
+              <div className="order-log-row" key={index}>
+                <span>{formatCryptoOrderLog(log)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="log-line">아직 코인/선물 주문 로그가 없습니다.</div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -553,6 +919,26 @@ function formatKrwText(value?: string) {
   }
 
   return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(numberValue);
+}
+
+function formatUsdt(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "-";
+  }
+  return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value)} USDT`;
+}
+
+function formatUsdtText(value?: string) {
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return "-";
+  }
+
+  return formatUsdt(numberValue);
 }
 
 function formatPercent(value?: number) {
@@ -626,6 +1012,52 @@ function formatAction(action: string) {
   return "관망";
 }
 
+function formatMarketEyebrow(tab: MarketTab) {
+  if (tab === "crypto-spot") {
+    return "Crypto Spot";
+  }
+  if (tab === "crypto-futures") {
+    return "Crypto Futures";
+  }
+  return "Paper Trading";
+}
+
+function formatMarketTitle(tab: MarketTab) {
+  if (tab === "crypto-spot") {
+    return "코인 현물 관제판";
+  }
+  if (tab === "crypto-futures") {
+    return "코인 선물 관제판";
+  }
+  return "자동매매 관제판";
+}
+
+function formatCryptoChange(quote?: CryptoQuote) {
+  if (!quote) {
+    return "시세 대기";
+  }
+
+  const change = Number(quote.price_change);
+  const prefix = change > 0 ? "+" : "";
+  return `24h ${prefix}${formatUsdtText(quote.price_change)} (${prefix}${quote.price_change_percent}%)`;
+}
+
+function formatCryptoOrderLog(log: Record<string, unknown>) {
+  const response = log.response as CryptoOrderResponse | undefined;
+  if (!response) {
+    return "코인 주문 로그를 표시할 수 없습니다.";
+  }
+
+  const sideLabels: Record<string, string> = {
+    buy: "매수",
+    sell: "매도",
+    long: "롱",
+    short: "숏",
+  };
+  const leverage = response.leverage ? ` · ${response.leverage}x` : "";
+  return `${response.status} · ${sideLabels[response.side] ?? response.side} ${response.symbol} ${response.quantity} @ ${formatUsdt(response.price)}${leverage}`;
+}
+
 async function loadQuotes(items: WatchlistItem[]) {
   const quotes: Record<string, KisApiResponse> = {};
   const quoteErrors: Record<string, string> = {};
@@ -639,6 +1071,21 @@ async function loadQuotes(items: WatchlistItem[]) {
       quotes[item.symbol] = await fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`);
     } catch (error) {
       quoteErrors[item.symbol] = error instanceof Error ? error.message : "현재가 조회 실패";
+    }
+  }
+
+  return { quotes, quoteErrors };
+}
+
+async function loadCryptoQuotes(marketType: "spot" | "futures", items: CryptoInstrument[]) {
+  const quotes: Record<string, CryptoQuote> = {};
+  const quoteErrors: Record<string, string> = {};
+
+  for (const item of items) {
+    try {
+      quotes[item.symbol] = await fetchJsonWithRetry<CryptoQuote>(`/api/crypto/quote/${marketType}/${item.symbol}`);
+    } catch (error) {
+      quoteErrors[item.symbol] = error instanceof Error ? error.message : "시세 조회 실패";
     }
   }
 

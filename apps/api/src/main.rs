@@ -1,5 +1,6 @@
 mod auto_trading;
 mod config;
+mod crypto;
 mod error;
 mod kis;
 mod orders;

@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auto_trading::{self, AutoRunRequest, AutoRunResponse},
+    crypto::{
+        self, CryptoConfigStatus, CryptoInstrument, CryptoOrderRequest, CryptoOrderResponse,
+        CryptoQuote,
+    },
     error::ApiResult,
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
@@ -25,6 +29,16 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/account/balance", get(account_balance))
         .route("/api/market/price/:symbol", get(market_price))
         .route("/api/stocks/search", get(search_stocks))
+        .route("/api/crypto/config", get(crypto_config))
+        .route(
+            "/api/crypto/instruments/:market_type",
+            get(crypto_instruments),
+        )
+        .route("/api/crypto/quote/:market_type/:symbol", get(crypto_quote))
+        .route(
+            "/api/crypto/orders",
+            get(crypto_order_logs).post(place_crypto_order),
+        )
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/orders", get(order_logs).post(place_order))
@@ -45,6 +59,7 @@ struct SystemStatus {
     trading_mode: String,
     live_trading_enabled: bool,
     kis: KisConfigStatus,
+    crypto: CryptoConfigStatus,
     strategy: StrategyHealth,
     risk: RiskConfig,
 }
@@ -55,6 +70,7 @@ struct RiskConfig {
     max_position_ratio: f64,
     daily_max_loss_ratio: f64,
     daily_max_order_count: u32,
+    max_crypto_order_amount_usdt: f64,
 }
 
 #[derive(Deserialize)]
@@ -80,12 +96,14 @@ async fn status(State(state): State<AppState>) -> Json<SystemStatus> {
         trading_mode: state.config.trading_mode.clone(),
         live_trading_enabled: state.config.live_trading_enabled,
         kis: kis::config_status(&state.config),
+        crypto: crypto::config_status(&state),
         strategy,
         risk: RiskConfig {
             max_order_amount_krw: state.config.max_order_amount_krw,
             max_position_ratio: state.config.max_position_ratio,
             daily_max_loss_ratio: state.config.daily_max_loss_ratio,
             daily_max_order_count: state.config.daily_max_order_count,
+            max_crypto_order_amount_usdt: state.config.max_crypto_order_amount_usdt,
         },
     })
 }
@@ -116,6 +134,36 @@ async fn search_stocks(
     Query(query): Query<StockSearchQuery>,
 ) -> ApiResult<Json<Vec<Stock>>> {
     Ok(Json(stocks::search(&state, &query.q)?))
+}
+
+async fn crypto_config(State(state): State<AppState>) -> Json<CryptoConfigStatus> {
+    Json(crypto::config_status(&state))
+}
+
+async fn crypto_instruments(
+    Path(market_type): Path<String>,
+) -> ApiResult<Json<Vec<CryptoInstrument>>> {
+    Ok(Json(crypto::instruments(&market_type)?))
+}
+
+async fn crypto_quote(
+    State(state): State<AppState>,
+    Path((market_type, symbol)): Path<(String, String)>,
+) -> ApiResult<Json<CryptoQuote>> {
+    Ok(Json(crypto::quote(&state, &market_type, &symbol).await?))
+}
+
+async fn crypto_order_logs(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    Ok(Json(crypto::list_order_logs(&state)?))
+}
+
+async fn place_crypto_order(
+    State(state): State<AppState>,
+    Json(request): Json<CryptoOrderRequest>,
+) -> ApiResult<Json<CryptoOrderResponse>> {
+    Ok(Json(crypto::place_order(&state, request).await?))
 }
 
 async fn watchlist(State(state): State<AppState>) -> ApiResult<Json<Vec<WatchlistItem>>> {
