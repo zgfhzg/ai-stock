@@ -86,6 +86,11 @@ type AutoRunResponse = {
   decisions: AutoDecision[];
 };
 
+type AutoRunLog = {
+  timestamp_unix: number;
+  response: AutoRunResponse;
+};
+
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ||
   `${window.location.protocol}//${window.location.hostname}:8080`;
@@ -107,6 +112,7 @@ function App() {
   const [orderResult, setOrderResult] = React.useState<OrderResponse | null>(null);
   const [orderLogs, setOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const [autoRun, setAutoRun] = React.useState<AutoRunResponse | null>(null);
+  const [autoRunLogs, setAutoRunLogs] = React.useState<AutoRunLog[]>([]);
   const [autoRunning, setAutoRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const accountSummary = dashboardData.balance?.output2?.[0];
@@ -120,6 +126,7 @@ function App() {
         return response.json();
       })
       .then(setStatus)
+      .then(loadAutoRunLogs)
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
 
@@ -248,9 +255,18 @@ function App() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ execute: false }),
     })
-      .then(setAutoRun)
+      .then((result) => {
+        setAutoRun(result);
+        return loadAutoRunLogs();
+      })
       .catch(() => setError("자동매매 판단을 실행하지 못했습니다. API와 전략 엔진 상태를 확인하세요."))
       .finally(() => setAutoRunning(false));
+  }
+
+  function loadAutoRunLogs() {
+    return fetchJson<AutoRunLog[]>("/api/auto-trading/runs")
+      .then(setAutoRunLogs)
+      .catch(() => setAutoRunLogs([]));
   }
 
   return (
@@ -444,7 +460,7 @@ function App() {
           <div className="panel wide">
             <div className="panel-header">
               <h2>자동매매 실행</h2>
-              <span>{autoRun ? `${autoRun.summary.total}개 판단` : "추천 전용"}</span>
+              <span>{autoRun ? `${autoRun.summary.total}개 판단` : formatLastAutoRun(autoRunLogs)}</span>
             </div>
             <div className="auto-trade-toolbar">
               <button type="button" onClick={handleRunAutoTrading} disabled={autoRunning}>
@@ -473,6 +489,34 @@ function App() {
               </div>
             ) : (
               <div className="log-line">관심종목 기준으로 현재가를 확인하고 AI 판단을 한 번 실행합니다.</div>
+            )}
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
+              <h2>자동매매 판단 로그</h2>
+              <span>{autoRunLogs.length > 0 ? `최근 ${autoRunLogs.length}회` : "기록 없음"}</span>
+            </div>
+            {autoRunLogs.length > 0 ? (
+              <div className="auto-run-log-list">
+                {autoRunLogs.slice(0, 5).map((log, index) => (
+                  <article className="auto-run-log-row" key={`${log.timestamp_unix}-${index}`}>
+                    <div className="auto-run-log-summary">
+                      <strong>{formatRunTime(log.timestamp_unix)}</strong>
+                      <span>{formatAutoSummary(log.response)} · {formatMode(log.response.mode, log.response.executed)}</span>
+                    </div>
+                    <div className="auto-run-log-decisions">
+                      {log.response.decisions.slice(0, 4).map((decision) => (
+                        <span key={`${log.timestamp_unix}-${decision.symbol}`}>
+                          {decision.name} {formatAction(decision.action)} {Math.round(decision.confidence * 100)}%
+                        </span>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">자동매매 실행 기록이 아직 없습니다.</div>
             )}
           </div>
         </section>
@@ -541,6 +585,32 @@ function formatOrderLog(log: Record<string, unknown>) {
 
 function formatAutoSummary(run: AutoRunResponse) {
   return `관망 ${run.summary.hold} · 매수 ${run.summary.buy} · 매도 ${run.summary.sell} · 주문 ${run.summary.orders}`;
+}
+
+function formatLastAutoRun(logs: AutoRunLog[]) {
+  if (logs.length === 0) {
+    return "추천 전용";
+  }
+  return `최근 실행 ${formatRunTime(logs[0].timestamp_unix)}`;
+}
+
+function formatRunTime(timestampUnix: number) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestampUnix * 1000));
+}
+
+function formatMode(mode: string, executed: boolean) {
+  if (executed) {
+    return "모의 주문 실행";
+  }
+  if (mode === "paper_auto") {
+    return "자동주문 대기";
+  }
+  return "추천만";
 }
 
 function formatAction(action: string) {

@@ -520,6 +520,42 @@ h2 {
   white-space: nowrap;
 }
 
+.auto-run-log-list {
+  display: grid;
+  gap: 10px;
+}
+
+.auto-run-log-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(0, 1.2fr);
+  gap: 14px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+}
+
+.auto-run-log-summary,
+.auto-run-log-decisions {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.auto-run-log-summary span,
+.auto-run-log-decisions span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.auto-run-log-summary strong,
+.auto-run-log-summary span,
+.auto-run-log-decisions span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 920px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -560,6 +596,7 @@ h2 {
   .watchlist-form,
   .auto-trade-toolbar,
   .auto-decision-row,
+  .auto-run-log-row,
   .order-form,
   .quote-row {
     grid-template-columns: 1fr;
