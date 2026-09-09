@@ -15,6 +15,7 @@ use crate::{
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
     risk_settings::{self, RiskSettings, RiskSettingsInput},
+    rule_monitor::{self, RuleCheckRequest, RuleCheckResponse},
     state::AppState,
     stocks::{self, Stock},
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
@@ -54,6 +55,7 @@ pub fn app_router() -> Router<AppState> {
             "/api/auto-trading/rules",
             get(trading_rule_list).post(add_trading_rule),
         )
+        .route("/api/auto-trading/rules/check", post(check_trading_rules))
         .route("/api/auto-trading/rules/:id", delete(remove_trading_rule))
         .route("/api/ai/proposal", post(proposal))
 }
@@ -232,6 +234,13 @@ async fn remove_trading_rule(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<TradingRule>>> {
     Ok(Json(trading_rules::remove(&state, &id)?))
+}
+
+async fn check_trading_rules(
+    State(state): State<AppState>,
+    Json(request): Json<RuleCheckRequest>,
+) -> ApiResult<Json<RuleCheckResponse>> {
+    Ok(Json(rule_monitor::check_once(&state, request).await?))
 }
 
 async fn proposal(

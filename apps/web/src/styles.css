@@ -592,6 +592,137 @@ h2 {
   gap: 8px;
 }
 
+.rule-check-toolbar {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.rule-check-toolbar button {
+  height: 40px;
+  border: 1px solid #245f45;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #245f45;
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.rule-check-toolbar button:disabled {
+  opacity: 0.55;
+}
+
+.rule-check-toolbar div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-check-toolbar span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-monitor-toolbar {
+  display: grid;
+  grid-template-columns: 100px 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+  background: #f8f7f2;
+}
+
+.rule-monitor-toolbar button,
+.rule-monitor-toolbar select {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17211a;
+}
+
+.rule-monitor-toolbar button {
+  background: #245f45;
+  border-color: #245f45;
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.rule-monitor-toolbar button.stop {
+  background: #a6382f;
+  border-color: #a6382f;
+}
+
+.rule-monitor-toolbar button:disabled {
+  opacity: 0.55;
+}
+
+.rule-monitor-toolbar select {
+  padding: 0 8px;
+}
+
+.rule-monitor-toolbar div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-monitor-toolbar span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-monitor-toolbar strong,
+.rule-monitor-toolbar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-check-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.rule-check-row {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(130px, 0.7fr) minmax(0, 1.5fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+}
+
+.rule-check-row div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-check-row span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-check-row strong,
+.rule-check-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rule-row {
   min-height: 60px;
   display: grid;
@@ -780,11 +911,14 @@ h2 {
   .risk-form,
   .watchlist-form,
   .auto-trade-toolbar,
+  .rule-check-toolbar,
+  .rule-monitor-toolbar,
   .auto-decision-row,
   .auto-run-log-row,
   .order-form,
   .rule-form,
   .rule-row,
+  .rule-check-row,
   .crypto-order-form,
   .crypto-order-form.futures,
   .crypto-market-row,
@@ -797,6 +931,7 @@ h2 {
   .order-form button,
   .rule-form button,
   .rule-row button,
+  .rule-check-toolbar button,
   .crypto-order-form button {
     width: 100%;
   }

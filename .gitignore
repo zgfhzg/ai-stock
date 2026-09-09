@@ -17,5 +17,7 @@ data/auto-decisions.jsonl
 data/kis-token.json
 data/auto-rules.json
 data/risk-settings.json
+data/auto-rule-checks.jsonl
+data/auto-rule-state.json
 
 .DS_Store

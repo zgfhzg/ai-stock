@@ -6,6 +6,7 @@ mod kis;
 mod orders;
 mod risk_settings;
 mod routes;
+mod rule_monitor;
 mod state;
 mod stocks;
 mod strategy;

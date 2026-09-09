@@ -26,6 +26,9 @@ pub struct AppConfig {
     pub crypto_order_log_path: String,
     pub auto_trade_mode: String,
     pub auto_rules_path: String,
+    pub auto_rule_check_log_path: String,
+    pub auto_rule_state_path: String,
+    pub auto_rule_cooldown_seconds: u64,
     pub auto_decision_log_path: String,
     pub auto_min_confidence: f64,
     pub risk_settings_path: String,
@@ -71,6 +74,17 @@ impl AppConfig {
             ),
             auto_trade_mode: read_env("AUTO_TRADE_MODE", "recommend"),
             auto_rules_path: read_env("AUTO_RULES_PATH", "../../data/auto-rules.json"),
+            auto_rule_check_log_path: read_env(
+                "AUTO_RULE_CHECK_LOG_PATH",
+                "../../data/auto-rule-checks.jsonl",
+            ),
+            auto_rule_state_path: read_env(
+                "AUTO_RULE_STATE_PATH",
+                "../../data/auto-rule-state.json",
+            ),
+            auto_rule_cooldown_seconds: read_env("AUTO_RULE_COOLDOWN_SECONDS", "600")
+                .parse()
+                .unwrap_or(600),
             auto_decision_log_path: read_env(
                 "AUTO_DECISION_LOG_PATH",
                 "../../data/auto-decisions.jsonl",

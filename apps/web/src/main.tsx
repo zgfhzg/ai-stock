@@ -125,6 +125,35 @@ type TradingRule = {
   created_at_unix: number;
 };
 
+type RuleCheckResult = {
+  rule_id: string;
+  symbol: string;
+  name: string;
+  trigger: TradingRuleTrigger;
+  action: string;
+  status: string;
+  reason: string;
+  current_price?: number | null;
+  target_price: number;
+  quantity: number;
+  order_submitted: boolean;
+  cooldown_until_unix?: number | null;
+};
+
+type RuleCheckResponse = {
+  mode: string;
+  executed: boolean;
+  summary: {
+    total: number;
+    matched: number;
+    waiting: number;
+    cooldown: number;
+    skipped: number;
+    orders: number;
+  };
+  results: RuleCheckResult[];
+};
+
 type MarketTab = "stocks" | "crypto-spot" | "crypto-futures";
 
 type CryptoInstrument = {
@@ -194,6 +223,12 @@ function App() {
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
   const [ruleTargetPrice, setRuleTargetPrice] = React.useState("");
   const [ruleQuantity, setRuleQuantity] = React.useState("1");
+  const [ruleCheck, setRuleCheck] = React.useState<RuleCheckResponse | null>(null);
+  const [ruleChecking, setRuleChecking] = React.useState(false);
+  const [ruleMonitorEnabled, setRuleMonitorEnabled] = React.useState(false);
+  const [ruleMonitorIntervalSeconds, setRuleMonitorIntervalSeconds] = React.useState(30);
+  const [lastRuleMonitorAt, setLastRuleMonitorAt] = React.useState<Date | null>(null);
+  const ruleCheckInFlight = React.useRef(false);
   const [riskForm, setRiskForm] = React.useState({
     max_order_amount_krw: "100000",
     max_position_ratio: "20",
@@ -250,6 +285,25 @@ function App() {
 
     loadCryptoMarketData(cryptoMarketType);
   }, [activeMarket]);
+
+  React.useEffect(() => {
+    if (!ruleMonitorEnabled || tradingRules.length === 0) {
+      return;
+    }
+
+    runTradingRuleCheck({ automatic: true });
+    const timer = window.setInterval(() => {
+      runTradingRuleCheck({ automatic: true });
+    }, ruleMonitorIntervalSeconds * 1000);
+
+    return () => window.clearInterval(timer);
+  }, [ruleMonitorEnabled, ruleMonitorIntervalSeconds, tradingRules.length]);
+
+  React.useEffect(() => {
+    if (tradingRules.length === 0) {
+      setRuleMonitorEnabled(false);
+    }
+  }, [tradingRules.length]);
 
   React.useEffect(() => {
     const query = stockQuery.trim();
@@ -428,8 +482,47 @@ function App() {
 
   function handleRemoveTradingRule(id: string) {
     fetchJson<TradingRule[]>(`/api/auto-trading/rules/${id}`, { method: "DELETE" })
-      .then(setTradingRules)
+      .then((rules) => {
+        setTradingRules(rules);
+        setRuleCheck(null);
+      })
       .catch(() => setError("자동매매 규칙을 삭제하지 못했습니다."));
+  }
+
+  function handleCheckTradingRules() {
+    runTradingRuleCheck({ automatic: false });
+  }
+
+  function runTradingRuleCheck({ automatic }: { automatic: boolean }) {
+    if (ruleCheckInFlight.current) {
+      return;
+    }
+
+    ruleCheckInFlight.current = true;
+    setError(null);
+    setRuleChecking(true);
+
+    fetchJson<RuleCheckResponse>("/api/auto-trading/rules/check", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ execute: false }),
+    })
+      .then((result) => {
+        setRuleCheck(result);
+        if (automatic) {
+          setLastRuleMonitorAt(new Date());
+        }
+      })
+      .catch(() => {
+        setError("자동매매 규칙을 점검하지 못했습니다. API와 KIS 연결 상태를 확인하세요.");
+        if (automatic) {
+          setRuleMonitorEnabled(false);
+        }
+      })
+      .finally(() => {
+        ruleCheckInFlight.current = false;
+        setRuleChecking(false);
+      });
   }
 
   function handleRiskFormChange(key: keyof typeof riskForm, value: string) {
@@ -820,6 +913,57 @@ function App() {
             ) : (
               <div className="log-line">가격 조건을 추가하면 감시 엔진에서 매매 후보로 사용합니다.</div>
             )}
+            <div className="rule-check-toolbar">
+              <button type="button" onClick={handleCheckTradingRules} disabled={ruleChecking || tradingRules.length === 0}>
+                <PlayCircle size={18} />
+                <span>{ruleChecking ? "점검 중" : "규칙 점검 1회"}</span>
+              </button>
+              <div>
+                <strong>{ruleCheck ? formatRuleCheckSummary(ruleCheck) : "아직 점검 전"}</strong>
+                <span>조건 충족 여부만 확인하고 주문은 넣지 않습니다.</span>
+              </div>
+            </div>
+            <div className="rule-monitor-toolbar">
+              <button
+                className={ruleMonitorEnabled ? "stop" : ""}
+                type="button"
+                onClick={() => setRuleMonitorEnabled((enabled) => !enabled)}
+                disabled={tradingRules.length === 0}
+              >
+                {ruleMonitorEnabled ? "감시 중지" : "감시 시작"}
+              </button>
+              <select
+                aria-label="감시 주기"
+                value={ruleMonitorIntervalSeconds}
+                onChange={(event) => setRuleMonitorIntervalSeconds(Number(event.target.value))}
+              >
+                <option value={10}>10초</option>
+                <option value={30}>30초</option>
+                <option value={60}>1분</option>
+                <option value={300}>5분</option>
+              </select>
+              <div>
+                <strong>{ruleMonitorEnabled ? `${ruleMonitorIntervalSeconds}초마다 감시 중` : "감시 대기"}</strong>
+                <span>{lastRuleMonitorAt ? `마지막 점검 ${formatClock(lastRuleMonitorAt)}` : "아직 자동 점검 전"}</span>
+              </div>
+            </div>
+            {ruleCheck ? (
+              <div className="rule-check-list">
+                {ruleCheck.results.map((result) => (
+                  <article className="rule-check-row" key={result.rule_id}>
+                    <div>
+                      <strong>{result.name}</strong>
+                      <span>{formatRuleStatus(result.status)} · {formatRuleTrigger(result.trigger)}</span>
+                    </div>
+                    <div>
+                      <strong>{formatKrw(result.current_price ?? undefined)}</strong>
+                      <span>기준 {formatKrw(result.target_price)} · {result.quantity}주</span>
+                    </div>
+                    <span>{formatRuleCheckReason(result)}</span>
+                  </article>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div className="panel wide">
@@ -1255,6 +1399,14 @@ function formatRunTime(timestampUnix: number) {
   }).format(new Date(timestampUnix * 1000));
 }
 
+function formatClock(date: Date) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
 function formatMode(mode: string, executed: boolean) {
   if (executed) {
     return "모의 주문 실행";
@@ -1273,6 +1425,29 @@ function formatRuleTrigger(trigger: TradingRuleTrigger) {
     take_profit: "익절",
   };
   return labels[trigger];
+}
+
+function formatRuleCheckSummary(check: RuleCheckResponse) {
+  return `충족 ${check.summary.matched} · 대기 ${check.summary.waiting} · 쿨다운 ${check.summary.cooldown} · 주문 ${check.summary.orders}`;
+}
+
+function formatRuleStatus(status: string) {
+  const labels: Record<string, string> = {
+    matched: "조건 충족",
+    waiting: "대기",
+    cooldown: "쿨다운",
+    skipped: "건너뜀",
+    order_submitted: "주문 접수",
+    order_rejected: "주문 거절",
+  };
+  return labels[status] ?? status;
+}
+
+function formatRuleCheckReason(result: RuleCheckResult) {
+  if (result.cooldown_until_unix) {
+    return `${result.reason} 해제 ${formatRunTime(result.cooldown_until_unix)}`;
+  }
+  return result.reason;
 }
 
 function formatAction(action: string) {

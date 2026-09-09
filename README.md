@@ -66,9 +66,13 @@ docker compose up --build
 - `GET /api/auto-trading/runs`: 최근 자동매매 판단 로그 조회
 - `GET /api/auto-trading/rules`: 조건 기반 자동매매 규칙 조회
 - `POST /api/auto-trading/rules`: 조건 기반 자동매매 규칙 추가
+- `POST /api/auto-trading/rules/check`: 저장된 규칙을 현재가와 비교해 1회 점검
 - `DELETE /api/auto-trading/rules/{id}`: 조건 기반 자동매매 규칙 삭제
 
 초기 전략 엔진은 현재가와 전일 대비 등락률을 받아 단순 규칙으로 판단합니다. 기본값은 추천 전용이며, 전일 대비 큰 하락은 매수 후보, 큰 상승은 매도 후보, 그 외는 관망으로 기록합니다.
+
+조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 브라우저 감시 모드에서는 선택한 주기마다 규칙을 반복 점검하며, 기본 추천 모드에서는 주문 없이 조건 충족 여부만 기록합니다.
+같은 규칙이 반복 발동하는 것을 막기 위해 기본 10분 쿨다운을 적용하며, `AUTO_RULE_COOLDOWN_SECONDS`로 조정할 수 있습니다.
 
 종목 검색 목록은 `data/stocks.json`을 사용합니다. 공식 KIS 종목 마스터 기준으로 갱신하려면 아래 명령을 실행합니다.
 
