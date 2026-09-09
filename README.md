@@ -55,6 +55,8 @@ docker compose up --build
 - `GET /api/account/balance`: 국내주식 잔고 조회
 - `GET /api/market/price/{symbol}`: 국내주식 현재가 조회, 예: `005930`
 - `GET /api/stocks/search?q=삼성전자`: 종목명 또는 종목코드 검색
+- `GET /api/risk-settings`: 주문 리스크 제한 조회
+- `PUT /api/risk-settings`: 주문 리스크 제한 저장
 - `GET /api/watchlist`: 관심종목 목록 조회
 - `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "query": "삼성전자" }`
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
@@ -62,6 +64,9 @@ docker compose up --build
 - `GET /api/orders`: 최근 주문 로그 조회
 - `POST /api/auto-trading/run`: 관심종목 기준 자동매매 판단 1회 실행
 - `GET /api/auto-trading/runs`: 최근 자동매매 판단 로그 조회
+- `GET /api/auto-trading/rules`: 조건 기반 자동매매 규칙 조회
+- `POST /api/auto-trading/rules`: 조건 기반 자동매매 규칙 추가
+- `DELETE /api/auto-trading/rules/{id}`: 조건 기반 자동매매 규칙 삭제
 
 초기 전략 엔진은 현재가와 전일 대비 등락률을 받아 단순 규칙으로 판단합니다. 기본값은 추천 전용이며, 전일 대비 큰 하락은 매수 후보, 큰 상승은 매도 후보, 그 외는 관망으로 기록합니다.
 

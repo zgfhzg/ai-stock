@@ -11,6 +11,7 @@ use std::{
 use crate::{
     error::{ApiError, ApiResult},
     kis::{self, KisApiResponse},
+    risk_settings,
     state::AppState,
 };
 
@@ -135,7 +136,7 @@ fn validate_live_trading_guard(state: &AppState) -> ApiResult<()> {
 
 fn validate_risk(state: &AppState, request: &OrderRequest) -> ApiResult<()> {
     let amount = order_amount(request);
-    if amount > state.config.max_order_amount_krw {
+    if amount > risk_settings::get(state)?.max_order_amount_krw {
         return validation_error(
             "max_order_amount_exceeded",
             "Order amount exceeds MAX_ORDER_AMOUNT_KRW.",

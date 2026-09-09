@@ -14,9 +14,11 @@ use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
+    risk_settings::{self, RiskSettings, RiskSettingsInput},
     state::AppState,
     stocks::{self, Stock},
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
+    trading_rules::{self, TradingRule, TradingRuleInput},
     watchlist::{self, WatchlistItem, WatchlistItemInput},
 };
 
@@ -36,6 +38,10 @@ pub fn app_router() -> Router<AppState> {
         )
         .route("/api/crypto/quote/:market_type/:symbol", get(crypto_quote))
         .route(
+            "/api/risk-settings",
+            get(risk_settings).put(update_risk_settings),
+        )
+        .route(
             "/api/crypto/orders",
             get(crypto_order_logs).post(place_crypto_order),
         )
@@ -44,6 +50,11 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/auto-trading/run", post(run_auto_trading))
         .route("/api/auto-trading/runs", get(auto_trading_logs))
+        .route(
+            "/api/auto-trading/rules",
+            get(trading_rule_list).post(add_trading_rule),
+        )
+        .route("/api/auto-trading/rules/:id", delete(remove_trading_rule))
         .route("/api/ai/proposal", post(proposal))
 }
 
@@ -61,16 +72,7 @@ struct SystemStatus {
     kis: KisConfigStatus,
     crypto: CryptoConfigStatus,
     strategy: StrategyHealth,
-    risk: RiskConfig,
-}
-
-#[derive(Serialize)]
-struct RiskConfig {
-    max_order_amount_krw: u64,
-    max_position_ratio: f64,
-    daily_max_loss_ratio: f64,
-    daily_max_order_count: u32,
-    max_crypto_order_amount_usdt: f64,
+    risk: RiskSettings,
 }
 
 #[derive(Deserialize)]
@@ -98,13 +100,8 @@ async fn status(State(state): State<AppState>) -> Json<SystemStatus> {
         kis: kis::config_status(&state.config),
         crypto: crypto::config_status(&state),
         strategy,
-        risk: RiskConfig {
-            max_order_amount_krw: state.config.max_order_amount_krw,
-            max_position_ratio: state.config.max_position_ratio,
-            daily_max_loss_ratio: state.config.daily_max_loss_ratio,
-            daily_max_order_count: state.config.daily_max_order_count,
-            max_crypto_order_amount_usdt: state.config.max_crypto_order_amount_usdt,
-        },
+        risk: risk_settings::get(&state)
+            .unwrap_or_else(|_| RiskSettings::from_config(&state.config)),
     })
 }
 
@@ -151,6 +148,17 @@ async fn crypto_quote(
     Path((market_type, symbol)): Path<(String, String)>,
 ) -> ApiResult<Json<CryptoQuote>> {
     Ok(Json(crypto::quote(&state, &market_type, &symbol).await?))
+}
+
+async fn risk_settings(State(state): State<AppState>) -> ApiResult<Json<RiskSettings>> {
+    Ok(Json(risk_settings::get(&state)?))
+}
+
+async fn update_risk_settings(
+    State(state): State<AppState>,
+    Json(input): Json<RiskSettingsInput>,
+) -> ApiResult<Json<RiskSettings>> {
+    Ok(Json(risk_settings::save(&state, input)?))
 }
 
 async fn crypto_order_logs(
@@ -206,6 +214,24 @@ async fn auto_trading_logs(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
     Ok(Json(auto_trading::list_logs(&state)?))
+}
+
+async fn trading_rule_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TradingRule>>> {
+    Ok(Json(trading_rules::list(&state)?))
+}
+
+async fn add_trading_rule(
+    State(state): State<AppState>,
+    Json(input): Json<TradingRuleInput>,
+) -> ApiResult<Json<Vec<TradingRule>>> {
+    Ok(Json(trading_rules::add(&state, input)?))
+}
+
+async fn remove_trading_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<TradingRule>>> {
+    Ok(Json(trading_rules::remove(&state, &id)?))
 }
 
 async fn proposal(

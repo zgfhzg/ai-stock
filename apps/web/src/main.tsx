@@ -43,6 +43,8 @@ type SystemStatus = {
   };
 };
 
+type RiskSettings = SystemStatus["risk"];
+
 type KisApiResponse = {
   rt_cd?: string;
   msg_cd?: string;
@@ -110,6 +112,19 @@ type AutoRunLog = {
   response: AutoRunResponse;
 };
 
+type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
+
+type TradingRule = {
+  id: string;
+  symbol: string;
+  name: string;
+  trigger: TradingRuleTrigger;
+  target_price: number;
+  quantity: number;
+  enabled: boolean;
+  created_at_unix: number;
+};
+
 type MarketTab = "stocks" | "crypto-spot" | "crypto-futures";
 
 type CryptoInstrument = {
@@ -174,6 +189,19 @@ function App() {
   const [autoRun, setAutoRun] = React.useState<AutoRunResponse | null>(null);
   const [autoRunLogs, setAutoRunLogs] = React.useState<AutoRunLog[]>([]);
   const [autoRunning, setAutoRunning] = React.useState(false);
+  const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
+  const [ruleQuery, setRuleQuery] = React.useState("");
+  const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
+  const [ruleTargetPrice, setRuleTargetPrice] = React.useState("");
+  const [ruleQuantity, setRuleQuantity] = React.useState("1");
+  const [riskForm, setRiskForm] = React.useState({
+    max_order_amount_krw: "100000",
+    max_position_ratio: "20",
+    daily_max_loss_ratio: "3",
+    daily_max_order_count: "20",
+    max_crypto_order_amount_usdt: "100",
+  });
+  const [riskSaving, setRiskSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [cryptoInstruments, setCryptoInstruments] = React.useState<CryptoInstrument[]>([]);
   const [cryptoQuotes, setCryptoQuotes] = React.useState<Record<string, CryptoQuote>>({});
@@ -197,7 +225,7 @@ function App() {
         return response.json();
       })
       .then(setStatus)
-      .then(loadAutoRunLogs)
+      .then(() => Promise.all([loadAutoRunLogs(), loadTradingRules()]))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
 
@@ -208,6 +236,12 @@ function App() {
 
     loadDashboardData();
   }, [status]);
+
+  React.useEffect(() => {
+    if (status?.risk) {
+      setRiskForm(formatRiskForm(status.risk));
+    }
+  }, [status?.risk]);
 
   React.useEffect(() => {
     if (activeMarket === "stocks") {
@@ -351,6 +385,79 @@ function App() {
     return fetchJson<AutoRunLog[]>("/api/auto-trading/runs")
       .then(setAutoRunLogs)
       .catch(() => setAutoRunLogs([]));
+  }
+
+  function loadTradingRules() {
+    return fetchJson<TradingRule[]>("/api/auto-trading/rules")
+      .then(setTradingRules)
+      .catch(() => setTradingRules([]));
+  }
+
+  function handleAddTradingRule(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+
+    const query = ruleQuery.trim();
+    const targetPrice = Number(ruleTargetPrice);
+    const quantity = Number(ruleQuantity);
+
+    if (!query || !targetPrice || !quantity) {
+      setError("종목명, 기준가, 수량을 입력하세요.");
+      return;
+    }
+
+    fetchJson<TradingRule[]>("/api/auto-trading/rules", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query,
+        trigger: ruleTrigger,
+        target_price: targetPrice,
+        quantity,
+        enabled: true,
+      }),
+    })
+      .then((rules) => {
+        setTradingRules(rules);
+        setRuleQuery("");
+        setRuleTargetPrice("");
+        setRuleQuantity("1");
+      })
+      .catch(() => setError("자동매매 규칙을 추가하지 못했습니다. 종목명과 기준값을 확인하세요."));
+  }
+
+  function handleRemoveTradingRule(id: string) {
+    fetchJson<TradingRule[]>(`/api/auto-trading/rules/${id}`, { method: "DELETE" })
+      .then(setTradingRules)
+      .catch(() => setError("자동매매 규칙을 삭제하지 못했습니다."));
+  }
+
+  function handleRiskFormChange(key: keyof typeof riskForm, value: string) {
+    setRiskForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function handleSaveRiskSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setRiskSaving(true);
+
+    const payload = parseRiskForm(riskForm);
+    if (!payload) {
+      setRiskSaving(false);
+      setError("리스크 제한값은 0보다 큰 숫자로 입력하세요.");
+      return;
+    }
+
+    fetchJson<RiskSettings>("/api/risk-settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((risk) => {
+        setStatus((current) => (current ? { ...current, risk } : current));
+      })
+      .catch(() => setError("리스크 제한을 저장하지 못했습니다. 입력값 범위를 확인하세요."))
+      .finally(() => setRiskSaving(false));
   }
 
   function loadCryptoMarketData(marketType: "spot" | "futures") {
@@ -592,14 +699,127 @@ function App() {
           <div className="panel wide">
             <div className="panel-header">
               <h2>리스크 제한</h2>
-              <span>기본 보호장치</span>
+              <span>주문 보호장치</span>
             </div>
-            <ul className="risk-list compact">
-              <li><span>1회 주문 한도</span><strong>{formatKrw(status?.risk.max_order_amount_krw)}</strong></li>
-              <li><span>종목 최대 비중</span><strong>{formatPercent(status?.risk.max_position_ratio)}</strong></li>
-              <li><span>일일 손실 제한</span><strong>{formatPercent(status?.risk.daily_max_loss_ratio)}</strong></li>
-              <li><span>일일 주문 횟수</span><strong>{status?.risk.daily_max_order_count ?? "-"}</strong></li>
-            </ul>
+            <form className="risk-form" onSubmit={handleSaveRiskSettings}>
+              <label>
+                <span>1회 주문 한도</span>
+                <input
+                  inputMode="numeric"
+                  min="1"
+                  type="number"
+                  value={riskForm.max_order_amount_krw}
+                  onChange={(event) => handleRiskFormChange("max_order_amount_krw", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>종목 최대 비중</span>
+                <input
+                  inputMode="decimal"
+                  max="100"
+                  min="1"
+                  type="number"
+                  value={riskForm.max_position_ratio}
+                  onChange={(event) => handleRiskFormChange("max_position_ratio", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>일일 손실 제한</span>
+                <input
+                  inputMode="decimal"
+                  max="100"
+                  min="1"
+                  type="number"
+                  value={riskForm.daily_max_loss_ratio}
+                  onChange={(event) => handleRiskFormChange("daily_max_loss_ratio", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>일일 주문 횟수</span>
+                <input
+                  inputMode="numeric"
+                  min="1"
+                  type="number"
+                  value={riskForm.daily_max_order_count}
+                  onChange={(event) => handleRiskFormChange("daily_max_order_count", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>코인 1회 한도</span>
+                <input
+                  inputMode="decimal"
+                  min="1"
+                  type="number"
+                  value={riskForm.max_crypto_order_amount_usdt}
+                  onChange={(event) => handleRiskFormChange("max_crypto_order_amount_usdt", event.target.value)}
+                />
+              </label>
+              <button type="submit" disabled={riskSaving}>{riskSaving ? "저장 중" : "저장"}</button>
+            </form>
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
+              <h2>자동매매 규칙</h2>
+              <span>{tradingRules.length}개</span>
+            </div>
+            <form className="rule-form" onSubmit={handleAddTradingRule}>
+              <input
+                aria-label="규칙 종목명 또는 코드"
+                placeholder="종목명 또는 코드"
+                value={ruleQuery}
+                onChange={(event) => setRuleQuery(event.target.value)}
+              />
+              <select aria-label="규칙 조건" value={ruleTrigger} onChange={(event) => setRuleTrigger(event.target.value as TradingRuleTrigger)}>
+                <option value="buy_below">이하 매수</option>
+                <option value="sell_above">이상 매도</option>
+                <option value="stop_loss">손절</option>
+                <option value="take_profit">익절</option>
+              </select>
+              <input
+                aria-label="규칙 기준가"
+                inputMode="numeric"
+                min="1"
+                placeholder="기준가"
+                type="number"
+                value={ruleTargetPrice}
+                onChange={(event) => setRuleTargetPrice(event.target.value)}
+              />
+              <input
+                aria-label="규칙 수량"
+                inputMode="numeric"
+                min="1"
+                placeholder="수량"
+                type="number"
+                value={ruleQuantity}
+                onChange={(event) => setRuleQuantity(event.target.value)}
+              />
+              <button type="submit">
+                <Plus size={18} />
+                <span>추가</span>
+              </button>
+            </form>
+            {tradingRules.length > 0 ? (
+              <div className="rule-list">
+                {tradingRules.map((rule) => (
+                  <article className="rule-row" key={rule.id}>
+                    <div>
+                      <strong>{rule.name}</strong>
+                      <span>{rule.symbol} · {formatRuleTrigger(rule.trigger)}</span>
+                    </div>
+                    <div>
+                      <strong>{formatKrw(rule.target_price)}</strong>
+                      <span>{rule.quantity}주 · {rule.enabled ? "활성" : "비활성"}</span>
+                    </div>
+                    <button aria-label={`${rule.name} 규칙 삭제`} type="button" onClick={() => handleRemoveTradingRule(rule.id)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">가격 조건을 추가하면 감시 엔진에서 매매 후보로 사용합니다.</div>
+            )}
           </div>
 
           <div className="panel wide">
@@ -953,6 +1173,47 @@ function formatPercent(value?: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+function formatRiskForm(risk: RiskSettings) {
+  return {
+    max_order_amount_krw: String(risk.max_order_amount_krw),
+    max_position_ratio: String(Math.round(risk.max_position_ratio * 100)),
+    daily_max_loss_ratio: String(Math.round(risk.daily_max_loss_ratio * 100)),
+    daily_max_order_count: String(risk.daily_max_order_count),
+    max_crypto_order_amount_usdt: String(risk.max_crypto_order_amount_usdt),
+  };
+}
+
+function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | null {
+  const maxOrderAmountKrw = Number(form.max_order_amount_krw);
+  const maxPositionRatio = Number(form.max_position_ratio) / 100;
+  const dailyMaxLossRatio = Number(form.daily_max_loss_ratio) / 100;
+  const dailyMaxOrderCount = Number(form.daily_max_order_count);
+  const maxCryptoOrderAmountUsdt = Number(form.max_crypto_order_amount_usdt);
+
+  if (
+    maxOrderAmountKrw <= 0 ||
+    maxPositionRatio <= 0 ||
+    dailyMaxLossRatio <= 0 ||
+    dailyMaxOrderCount <= 0 ||
+    maxCryptoOrderAmountUsdt <= 0 ||
+    !Number.isFinite(maxOrderAmountKrw) ||
+    !Number.isFinite(maxPositionRatio) ||
+    !Number.isFinite(dailyMaxLossRatio) ||
+    !Number.isFinite(dailyMaxOrderCount) ||
+    !Number.isFinite(maxCryptoOrderAmountUsdt)
+  ) {
+    return null;
+  }
+
+  return {
+    max_order_amount_krw: Math.round(maxOrderAmountKrw),
+    max_position_ratio: maxPositionRatio,
+    daily_max_loss_ratio: dailyMaxLossRatio,
+    daily_max_order_count: Math.round(dailyMaxOrderCount),
+    max_crypto_order_amount_usdt: maxCryptoOrderAmountUsdt,
+  };
+}
+
 function formatSignedChange(value?: string, rate?: string) {
   if (!value || !rate) {
     return "전일 대비 -";
@@ -1002,6 +1263,16 @@ function formatMode(mode: string, executed: boolean) {
     return "자동주문 대기";
   }
   return "추천만";
+}
+
+function formatRuleTrigger(trigger: TradingRuleTrigger) {
+  const labels: Record<TradingRuleTrigger, string> = {
+    buy_below: "가격 이하 매수",
+    sell_above: "가격 이상 매도",
+    stop_loss: "손절",
+    take_profit: "익절",
+  };
+  return labels[trigger];
 }
 
 function formatAction(action: string) {

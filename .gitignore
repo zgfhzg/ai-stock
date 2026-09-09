@@ -15,5 +15,7 @@ data/logs/*.log
 data/orders.jsonl
 data/auto-decisions.jsonl
 data/kis-token.json
+data/auto-rules.json
+data/risk-settings.json
 
 .DS_Store

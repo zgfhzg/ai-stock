@@ -25,8 +25,10 @@ pub struct AppConfig {
     pub order_log_path: String,
     pub crypto_order_log_path: String,
     pub auto_trade_mode: String,
+    pub auto_rules_path: String,
     pub auto_decision_log_path: String,
     pub auto_min_confidence: f64,
+    pub risk_settings_path: String,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
     pub max_position_ratio: f64,
@@ -68,6 +70,7 @@ impl AppConfig {
                 "../../data/crypto-orders.jsonl",
             ),
             auto_trade_mode: read_env("AUTO_TRADE_MODE", "recommend"),
+            auto_rules_path: read_env("AUTO_RULES_PATH", "../../data/auto-rules.json"),
             auto_decision_log_path: read_env(
                 "AUTO_DECISION_LOG_PATH",
                 "../../data/auto-decisions.jsonl",
@@ -75,6 +78,7 @@ impl AppConfig {
             auto_min_confidence: read_env("AUTO_MIN_CONFIDENCE", "0.7")
                 .parse()
                 .unwrap_or(0.7),
+            risk_settings_path: read_env("RISK_SETTINGS_PATH", "../../data/risk-settings.json"),
             max_crypto_order_amount_usdt: read_env("MAX_CRYPTO_ORDER_AMOUNT_USDT", "100")
                 .parse()
                 .unwrap_or(100.0),

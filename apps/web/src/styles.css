@@ -251,6 +251,44 @@ h2 {
   border-bottom: 0;
 }
 
+.risk-form {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.risk-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.risk-form span {
+  color: #657066;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.risk-form input {
+  min-width: 0;
+  height: 40px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #17211a;
+  background: #ffffff;
+}
+
+.risk-form button {
+  height: 40px;
+  border: 1px solid #245f45;
+  border-radius: 8px;
+  background: #245f45;
+  color: #ffffff;
+  font-weight: 800;
+}
+
 .risk-list span,
 .summary-grid dt,
 .quote-box span,
@@ -304,6 +342,13 @@ h2 {
   gap: 8px;
 }
 
+.rule-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 124px 104px 78px 76px;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
 .crypto-order-form {
   display: grid;
   grid-template-columns: 84px minmax(150px, 1fr) 92px 120px 68px;
@@ -317,6 +362,8 @@ h2 {
 .watchlist-form input,
 .order-form input,
 .order-form select,
+.rule-form input,
+.rule-form select,
 .crypto-order-form input,
 .crypto-order-form select {
   min-width: 0;
@@ -331,6 +378,7 @@ h2 {
 .watchlist-form button,
 .quote-row button,
 .order-form button,
+.rule-form button,
 .crypto-order-form button {
   height: 40px;
   border: 1px solid #d7d4ca;
@@ -343,6 +391,12 @@ h2 {
 }
 
 .watchlist-form button {
+  gap: 4px;
+  width: 76px;
+  font-weight: 800;
+}
+
+.rule-form button {
   gap: 4px;
   width: 76px;
   font-weight: 800;
@@ -390,12 +444,17 @@ h2 {
 }
 
 .order-form button,
+.rule-form button,
 .crypto-order-form button {
   width: 68px;
   background: #245f45;
   color: #ffffff;
   border-color: #245f45;
   font-weight: 800;
+}
+
+.rule-form button {
+  width: 76px;
 }
 
 .quote-row button {
@@ -526,6 +585,57 @@ h2 {
 .order-log-list {
   display: grid;
   gap: 8px;
+}
+
+.rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.rule-row {
+  min-height: 60px;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 0.8fr) 40px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+}
+
+.rule-row div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-row div:nth-child(2) {
+  justify-items: end;
+  text-align: right;
+}
+
+.rule-row span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-row strong,
+.rule-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-row button {
+  width: 40px;
+  height: 40px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8f7f2;
+  color: #a6382f;
 }
 
 .order-log-row {
@@ -667,11 +777,14 @@ h2 {
   .status-grid,
   .content-grid,
   .risk-list.compact,
+  .risk-form,
   .watchlist-form,
   .auto-trade-toolbar,
   .auto-decision-row,
   .auto-run-log-row,
   .order-form,
+  .rule-form,
+  .rule-row,
   .crypto-order-form,
   .crypto-order-form.futures,
   .crypto-market-row,
@@ -682,6 +795,8 @@ h2 {
   .watchlist-form button,
   .quote-row button,
   .order-form button,
+  .rule-form button,
+  .rule-row button,
   .crypto-order-form button {
     width: 100%;
   }
@@ -704,6 +819,11 @@ h2 {
   }
 
   .quote-row div:nth-child(2) {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .rule-row div:nth-child(2) {
     justify-items: start;
     text-align: left;
   }

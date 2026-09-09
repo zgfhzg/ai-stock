@@ -10,6 +10,7 @@ use std::{
 
 use crate::{
     error::{api_error, ApiError, ApiResult},
+    risk_settings,
     state::AppState,
 };
 
@@ -294,7 +295,7 @@ fn normalize_order_request(request: CryptoOrderRequest) -> ApiResult<CryptoOrder
 
 fn validate_crypto_risk(state: &AppState, request: &CryptoOrderRequest) -> ApiResult<()> {
     let amount = notional(request);
-    if amount > state.config.max_crypto_order_amount_usdt {
+    if amount > risk_settings::get(state)?.max_crypto_order_amount_usdt {
         return validation_error(
             "max_crypto_order_amount_exceeded",
             "Order notional exceeds MAX_CRYPTO_ORDER_AMOUNT_USDT.",

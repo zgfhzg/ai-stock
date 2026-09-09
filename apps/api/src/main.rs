@@ -4,10 +4,12 @@ mod crypto;
 mod error;
 mod kis;
 mod orders;
+mod risk_settings;
 mod routes;
 mod state;
 mod stocks;
 mod strategy;
+mod trading_rules;
 mod watchlist;
 
 use axum::{http::Method, Router};
@@ -47,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn cors() -> CorsLayer {
     CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_origin(Any)
         .allow_headers(Any)
 }
