@@ -139,6 +139,9 @@ type RuleCheckResult = {
   quantity: number;
   order_submitted: boolean;
   cooldown_until_unix?: number | null;
+  ai_action?: string | null;
+  ai_confidence?: number | null;
+  ai_reason?: string | null;
 };
 
 type RuleCheckResponse = {

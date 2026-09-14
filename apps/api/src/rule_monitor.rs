@@ -19,6 +19,7 @@ use crate::{
     orders::{self, OrderRequest},
     risk_settings,
     state::AppState,
+    strategy::{self, ProposalRequest, ProposalResponse},
     trading_rules::{self, RuleTrigger, TradingRule},
 };
 
@@ -118,6 +119,9 @@ pub struct RuleCheckResult {
     pub quantity: u32,
     pub order_submitted: bool,
     pub cooldown_until_unix: Option<u64>,
+    pub ai_action: Option<String>,
+    pub ai_confidence: Option<f64>,
+    pub ai_reason: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -428,6 +432,7 @@ async fn check_rule(
             None,
             false,
             None,
+            None,
         ));
     }
 
@@ -442,6 +447,7 @@ async fn check_rule(
                 None,
                 false,
                 None,
+                None,
             ));
         }
     };
@@ -451,6 +457,18 @@ async fn check_rule(
         .and_then(|value| value.get("stck_prpr"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<u64>().ok());
+    let previous_change = quote
+        .output
+        .as_ref()
+        .and_then(|value| value.get("prdy_vrss"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<i64>().ok());
+    let previous_change_rate = quote
+        .output
+        .as_ref()
+        .and_then(|value| value.get("prdy_ctrt"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<f64>().ok());
 
     let Some(current_price) = current_price else {
         return Ok(result(
@@ -460,6 +478,7 @@ async fn check_rule(
             "현재가를 읽지 못해 규칙을 판정하지 않았습니다.",
             None,
             false,
+            None,
             None,
         ));
     };
@@ -473,6 +492,7 @@ async fn check_rule(
             Some(current_price),
             false,
             None,
+            None,
         ));
     }
 
@@ -485,21 +505,55 @@ async fn check_rule(
             Some(current_price),
             false,
             Some(cooldown_until_unix),
+            None,
         ));
     }
 
     if !execute {
+        let proposal = rule_ai_proposal(
+            state,
+            rule,
+            current_price,
+            previous_change,
+            previous_change_rate,
+        )
+        .await;
         return Ok(result(
             rule,
             action,
             "matched",
             &format!(
-                "{} 조건이 충족됐지만 추천 모드라 주문하지 않았습니다.",
-                format_trigger(&rule.trigger)
+                "{} 조건이 충족됐지만 추천 모드라 주문하지 않았습니다. AI: {} {:.0}% - {}",
+                format_trigger(&rule.trigger),
+                format_ai_action(&proposal.action),
+                proposal.confidence * 100.0,
+                proposal.reason
             ),
             Some(current_price),
             false,
             None,
+            Some(&proposal),
+        ));
+    }
+
+    let proposal = rule_ai_proposal(
+        state,
+        rule,
+        current_price,
+        previous_change,
+        previous_change_rate,
+    )
+    .await;
+    if let Some(block_reason) = ai_order_guard(state, action, &proposal) {
+        return Ok(result(
+            rule,
+            action,
+            "skipped",
+            &block_reason,
+            Some(current_price),
+            false,
+            None,
+            Some(&proposal),
         ));
     }
 
@@ -512,6 +566,7 @@ async fn check_rule(
             Some(current_price),
             false,
             None,
+            Some(&proposal),
         ));
     }
 
@@ -542,7 +597,54 @@ async fn check_rule(
         Some(current_price),
         order.accepted,
         None,
+        Some(&proposal),
     ))
+}
+
+async fn rule_ai_proposal(
+    state: &AppState,
+    rule: &TradingRule,
+    current_price: u64,
+    previous_change: Option<i64>,
+    previous_change_rate: Option<f64>,
+) -> ProposalResponse {
+    strategy::proposal(
+        state,
+        &ProposalRequest {
+            symbol: rule.symbol.clone(),
+            name: Some(rule.name.clone()),
+            current_price: Some(current_price),
+            previous_change,
+            previous_change_rate,
+        },
+    )
+    .await
+}
+
+fn ai_order_guard(
+    state: &AppState,
+    expected_action: &str,
+    proposal: &ProposalResponse,
+) -> Option<String> {
+    if proposal.action != expected_action {
+        return Some(format!(
+            "가격 조건은 충족됐지만 AI 판단이 {}라 {} 주문을 막았습니다. {}",
+            format_ai_action(&proposal.action),
+            format_ai_action(expected_action),
+            proposal.reason
+        ));
+    }
+
+    if proposal.confidence < state.config.auto_min_confidence {
+        return Some(format!(
+            "가격 조건은 충족됐지만 AI 신뢰도 {:.0}%가 기준 {:.0}%보다 낮아 주문하지 않았습니다. {}",
+            proposal.confidence * 100.0,
+            state.config.auto_min_confidence * 100.0,
+            proposal.reason
+        ));
+    }
+
+    None
 }
 
 fn result(
@@ -553,6 +655,7 @@ fn result(
     current_price: Option<u64>,
     order_submitted: bool,
     cooldown_until_unix: Option<u64>,
+    proposal: Option<&ProposalResponse>,
 ) -> RuleCheckResult {
     RuleCheckResult {
         rule_id: rule.id.clone(),
@@ -567,6 +670,9 @@ fn result(
         quantity: rule.quantity,
         order_submitted,
         cooldown_until_unix,
+        ai_action: proposal.map(|proposal| proposal.action.clone()),
+        ai_confidence: proposal.map(|proposal| proposal.confidence),
+        ai_reason: proposal.map(|proposal| proposal.reason.clone()),
     }
 }
 
@@ -590,6 +696,15 @@ fn format_trigger(trigger: &RuleTrigger) -> &'static str {
         RuleTrigger::SellAbove => "가격 이상 매도",
         RuleTrigger::StopLoss => "손절",
         RuleTrigger::TakeProfit => "익절",
+    }
+}
+
+fn format_ai_action(action: &str) -> &'static str {
+    match action {
+        "buy" => "매수",
+        "sell" => "매도",
+        "hold" => "관망",
+        _ => "판단 불가",
     }
 }
 
