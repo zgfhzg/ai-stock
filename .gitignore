@@ -19,5 +19,6 @@ data/auto-rules.json
 data/risk-settings.json
 data/auto-rule-checks.jsonl
 data/auto-rule-state.json
+data/auto-rule-monitor-settings.json
 
 .DS_Store

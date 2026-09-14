@@ -36,6 +36,7 @@ type SystemStatus = {
   };
   risk: {
     max_order_amount_krw: number;
+    max_daily_auto_order_amount_krw_per_symbol: number;
     max_position_ratio: number;
     daily_max_loss_ratio: number;
     daily_max_order_count: number;
@@ -163,6 +164,7 @@ type RuleMonitorStatus = {
   last_check_at_unix?: number | null;
   next_check_at_unix?: number | null;
   last_error?: string | null;
+  consecutive_error_count: number;
   last_response?: RuleCheckResponse | null;
 };
 
@@ -250,6 +252,7 @@ function App() {
   const ruleCheckInFlight = React.useRef(false);
   const [riskForm, setRiskForm] = React.useState({
     max_order_amount_krw: "100000",
+    max_daily_auto_order_amount_krw_per_symbol: "100000",
     max_position_ratio: "20",
     daily_max_loss_ratio: "3",
     daily_max_order_count: "20",
@@ -858,6 +861,16 @@ function App() {
                 />
               </label>
               <label>
+                <span>종목별 자동한도</span>
+                <input
+                  inputMode="numeric"
+                  min="1"
+                  type="number"
+                  value={riskForm.max_daily_auto_order_amount_krw_per_symbol}
+                  onChange={(event) => handleRiskFormChange("max_daily_auto_order_amount_krw_per_symbol", event.target.value)}
+                />
+              </label>
+              <label>
                 <span>종목 최대 비중</span>
                 <input
                   inputMode="decimal"
@@ -1404,6 +1417,7 @@ function formatPercent(value?: number) {
 function formatRiskForm(risk: RiskSettings) {
   return {
     max_order_amount_krw: String(risk.max_order_amount_krw),
+    max_daily_auto_order_amount_krw_per_symbol: String(risk.max_daily_auto_order_amount_krw_per_symbol),
     max_position_ratio: String(Math.round(risk.max_position_ratio * 100)),
     daily_max_loss_ratio: String(Math.round(risk.daily_max_loss_ratio * 100)),
     daily_max_order_count: String(risk.daily_max_order_count),
@@ -1413,6 +1427,7 @@ function formatRiskForm(risk: RiskSettings) {
 
 function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | null {
   const maxOrderAmountKrw = Number(form.max_order_amount_krw);
+  const maxDailyAutoOrderAmountKrwPerSymbol = Number(form.max_daily_auto_order_amount_krw_per_symbol);
   const maxPositionRatio = Number(form.max_position_ratio) / 100;
   const dailyMaxLossRatio = Number(form.daily_max_loss_ratio) / 100;
   const dailyMaxOrderCount = Number(form.daily_max_order_count);
@@ -1420,11 +1435,13 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
 
   if (
     maxOrderAmountKrw <= 0 ||
+    maxDailyAutoOrderAmountKrwPerSymbol <= 0 ||
     maxPositionRatio <= 0 ||
     dailyMaxLossRatio <= 0 ||
     dailyMaxOrderCount <= 0 ||
     maxCryptoOrderAmountUsdt <= 0 ||
     !Number.isFinite(maxOrderAmountKrw) ||
+    !Number.isFinite(maxDailyAutoOrderAmountKrwPerSymbol) ||
     !Number.isFinite(maxPositionRatio) ||
     !Number.isFinite(dailyMaxLossRatio) ||
     !Number.isFinite(dailyMaxOrderCount) ||
@@ -1435,6 +1452,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
 
   return {
     max_order_amount_krw: Math.round(maxOrderAmountKrw),
+    max_daily_auto_order_amount_krw_per_symbol: Math.round(maxDailyAutoOrderAmountKrwPerSymbol),
     max_position_ratio: maxPositionRatio,
     daily_max_loss_ratio: dailyMaxLossRatio,
     daily_max_order_count: Math.round(dailyMaxOrderCount),

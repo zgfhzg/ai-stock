@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone, Deserialize, Serialize)]
 pub struct RiskSettings {
     pub max_order_amount_krw: u64,
+    pub max_daily_auto_order_amount_krw_per_symbol: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
     pub daily_max_order_count: u32,
@@ -20,6 +21,7 @@ pub struct RiskSettings {
 #[derive(Deserialize)]
 pub struct RiskSettingsInput {
     pub max_order_amount_krw: u64,
+    pub max_daily_auto_order_amount_krw_per_symbol: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
     pub daily_max_order_count: u32,
@@ -30,6 +32,8 @@ impl RiskSettings {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
             max_order_amount_krw: config.max_order_amount_krw,
+            max_daily_auto_order_amount_krw_per_symbol: config
+                .max_daily_auto_order_amount_krw_per_symbol,
             max_position_ratio: config.max_position_ratio,
             daily_max_loss_ratio: config.daily_max_loss_ratio,
             daily_max_order_count: config.daily_max_order_count,
@@ -47,6 +51,8 @@ pub fn save(state: &AppState, input: RiskSettingsInput) -> ApiResult<RiskSetting
 
     let settings = RiskSettings {
         max_order_amount_krw: input.max_order_amount_krw,
+        max_daily_auto_order_amount_krw_per_symbol: input
+            .max_daily_auto_order_amount_krw_per_symbol,
         max_position_ratio: input.max_position_ratio,
         daily_max_loss_ratio: input.daily_max_loss_ratio,
         daily_max_order_count: input.daily_max_order_count,
@@ -64,7 +70,37 @@ fn read_settings(path: &str, config: &AppConfig) -> ApiResult<RiskSettings> {
 
     let content =
         fs::read_to_string(path).map_err(|error| file_error("risk_read_failed", error))?;
-    serde_json::from_str(&content).map_err(|error| file_error("risk_parse_failed", error))
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|error| file_error("risk_parse_failed", error))?;
+    let defaults = RiskSettings::from_config(config);
+
+    Ok(RiskSettings {
+        max_order_amount_krw: value
+            .get("max_order_amount_krw")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(defaults.max_order_amount_krw),
+        max_daily_auto_order_amount_krw_per_symbol: value
+            .get("max_daily_auto_order_amount_krw_per_symbol")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(defaults.max_daily_auto_order_amount_krw_per_symbol),
+        max_position_ratio: value
+            .get("max_position_ratio")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(defaults.max_position_ratio),
+        daily_max_loss_ratio: value
+            .get("daily_max_loss_ratio")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(defaults.daily_max_loss_ratio),
+        daily_max_order_count: value
+            .get("daily_max_order_count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(defaults.daily_max_order_count),
+        max_crypto_order_amount_usdt: value
+            .get("max_crypto_order_amount_usdt")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(defaults.max_crypto_order_amount_usdt),
+    })
 }
 
 fn write_settings(path: &str, settings: &RiskSettings) -> ApiResult<()> {
@@ -82,6 +118,12 @@ fn validate(input: &RiskSettingsInput) -> ApiResult<()> {
         return validation_error(
             "invalid_max_order_amount",
             "Stock order limit must be positive.",
+        );
+    }
+    if input.max_daily_auto_order_amount_krw_per_symbol == 0 {
+        return validation_error(
+            "invalid_max_daily_auto_order_amount",
+            "Daily auto order amount limit must be positive.",
         );
     }
     if input.max_crypto_order_amount_usdt <= 0.0 || !input.max_crypto_order_amount_usdt.is_finite()

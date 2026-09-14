@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub auto_rules_path: String,
     pub auto_rule_check_log_path: String,
     pub auto_rule_state_path: String,
+    pub auto_rule_monitor_settings_path: String,
     pub auto_rule_cooldown_seconds: u64,
     pub auto_rule_monitor_interval_seconds: u64,
     pub auto_decision_log_path: String,
@@ -35,6 +36,7 @@ pub struct AppConfig {
     pub risk_settings_path: String,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
+    pub max_daily_auto_order_amount_krw_per_symbol: u64,
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
     pub daily_max_order_count: u32,
@@ -83,6 +85,10 @@ impl AppConfig {
                 "AUTO_RULE_STATE_PATH",
                 "../../data/auto-rule-state.json",
             ),
+            auto_rule_monitor_settings_path: read_env(
+                "AUTO_RULE_MONITOR_SETTINGS_PATH",
+                "../../data/auto-rule-monitor-settings.json",
+            ),
             auto_rule_cooldown_seconds: read_env("AUTO_RULE_COOLDOWN_SECONDS", "600")
                 .parse()
                 .unwrap_or(600),
@@ -106,6 +112,12 @@ impl AppConfig {
             max_order_amount_krw: read_env("MAX_ORDER_AMOUNT_KRW", "100000")
                 .parse()
                 .unwrap_or(100000),
+            max_daily_auto_order_amount_krw_per_symbol: read_env(
+                "MAX_DAILY_AUTO_ORDER_AMOUNT_KRW_PER_SYMBOL",
+                "100000",
+            )
+            .parse()
+            .unwrap_or(100000),
             max_position_ratio: read_env("MAX_POSITION_RATIO", "0.2").parse().unwrap_or(0.2),
             daily_max_loss_ratio: read_env("DAILY_MAX_LOSS_RATIO", "0.03")
                 .parse()

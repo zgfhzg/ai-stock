@@ -12,6 +12,7 @@
 ## 리스크 제한
 
 - 1회 주문 최대 금액: `MAX_ORDER_AMOUNT_KRW`
+- 종목별 일일 자동주문 최대 금액: `MAX_DAILY_AUTO_ORDER_AMOUNT_KRW_PER_SYMBOL`
 - 종목별 최대 비중: `MAX_POSITION_RATIO`
 - 하루 최대 손실률: `DAILY_MAX_LOSS_RATIO`
 - 하루 최대 주문 횟수: `DAILY_MAX_ORDER_COUNT`
@@ -40,7 +41,11 @@
 - 화면의 감시 시작/중지 버튼으로 백엔드 감시 엔진을 제어합니다.
 - `모의 주문` 토글은 기본 OFF이며, 켜진 상태로 감시를 시작해야 주문 실행 요청이 함께 전달됩니다.
 - 감시 엔진은 API 서버 프로세스 안에서 실행되므로 브라우저를 닫아도 API 서버가 살아 있으면 계속 점검합니다.
+- 감시 시작/중지 설정은 `AUTO_RULE_MONITOR_SETTINGS_PATH`에 저장하고, API 서버 재시작 시 켜져 있던 감시는 자동 복구합니다.
 - 감시 주기는 화면에서 10초, 30초, 1분, 5분 중 선택하고, 기본값은 `AUTO_RULE_MONITOR_INTERVAL_SECONDS`로 조정합니다.
 - 최근 감시 결과는 `AUTO_RULE_CHECK_LOG_PATH`에 JSONL로 저장하고 화면의 최근 감시 로그에서 확인합니다.
 - 같은 규칙이 조건을 반복 충족하면 기본 10분 동안 쿨다운 상태로 처리합니다.
+- 같은 규칙은 하루에 한 번만 자동주문을 실행합니다.
+- 종목별 일일 자동주문 금액이 한도를 넘으면 조건이 충족돼도 주문하지 않습니다.
+- 감시 엔진 오류가 3회 연속 발생하면 감시를 자동 중지합니다.
 - 쿨다운 상태는 `AUTO_RULE_STATE_PATH`에 저장하고, 시간은 `AUTO_RULE_COOLDOWN_SECONDS`로 조정합니다.

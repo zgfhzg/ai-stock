@@ -13,7 +13,7 @@ mod strategy;
 mod trading_rules;
 mod watchlist;
 
-use axum::{http::Method, Router};
+use axum::{http::Method, Json, Router};
 use std::net::SocketAddr;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -37,6 +37,9 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load();
     let port = config.api_port;
     let state = AppState::new(config);
+    if let Err((_, Json(error))) = rule_monitor::restore_monitor(&state).await {
+        tracing::warn!("rule monitor restore failed: {}", error.message);
+    }
 
     let app = Router::new()
         .merge(app_router())

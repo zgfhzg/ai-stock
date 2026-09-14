@@ -17,6 +17,7 @@ use crate::{
     error::ApiResult,
     kis,
     orders::{self, OrderRequest},
+    risk_settings,
     state::AppState,
     trading_rules::{self, RuleTrigger, TradingRule},
 };
@@ -32,6 +33,14 @@ pub struct RuleMonitorStartRequest {
     pub execute: Option<bool>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct RuleMonitorSettings {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub execute: bool,
+    pub updated_at_unix: u64,
+}
+
 #[derive(Clone, Serialize)]
 pub struct RuleMonitorStatus {
     pub running: bool,
@@ -42,6 +51,7 @@ pub struct RuleMonitorStatus {
     pub last_check_at_unix: Option<u64>,
     pub next_check_at_unix: Option<u64>,
     pub last_error: Option<String>,
+    pub consecutive_error_count: u32,
     pub last_response: Option<RuleCheckResponse>,
 }
 
@@ -69,6 +79,7 @@ impl RuleMonitorRuntime {
                 last_check_at_unix: None,
                 next_check_at_unix: None,
                 last_error: None,
+                consecutive_error_count: 0,
                 last_response: None,
             },
         }
@@ -124,11 +135,23 @@ struct RuleCheckLogEntry<'a> {
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct RuleMonitorState {
     rules: HashMap<String, RuleState>,
+    #[serde(default)]
+    symbols: HashMap<String, SymbolState>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 struct RuleState {
     last_triggered_at_unix: u64,
+    #[serde(default)]
+    daily_execution_date: Option<u64>,
+    #[serde(default)]
+    daily_execution_count: u32,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct SymbolState {
+    daily_order_date: u64,
+    daily_order_amount_krw: u64,
 }
 
 pub async fn check_once(
@@ -152,12 +175,7 @@ pub async fn check_once(
             orders_count += 1;
         }
         if matches!(result.status.as_str(), "matched" | "order_submitted") {
-            monitor_state.rules.insert(
-                rule.id.clone(),
-                RuleState {
-                    last_triggered_at_unix: now,
-                },
-            );
+            mark_rule_triggered(&mut monitor_state, rule, &result, now);
         }
         results.push(result);
     }
@@ -197,6 +215,26 @@ pub fn list_logs(state: &AppState) -> ApiResult<Vec<RuleCheckLog>> {
     Ok(rows)
 }
 
+pub async fn restore_monitor(state: &AppState) -> ApiResult<Option<RuleMonitorStatus>> {
+    let settings = read_monitor_settings(state)?;
+    if !settings.enabled {
+        let mut runtime = state.rule_monitor.lock().await;
+        runtime.status.interval_seconds = settings.interval_seconds;
+        runtime.status.execute = settings.execute;
+        return Ok(None);
+    }
+
+    let status = start_monitor(
+        state,
+        RuleMonitorStartRequest {
+            interval_seconds: Some(settings.interval_seconds),
+            execute: Some(settings.execute),
+        },
+    )
+    .await?;
+    Ok(Some(status))
+}
+
 pub async fn start_monitor(
     state: &AppState,
     request: RuleMonitorStartRequest,
@@ -205,6 +243,16 @@ pub async fn start_monitor(
     let execute = request.execute.unwrap_or(false);
     let now = unix_now();
     let worker_state = state.clone();
+
+    write_monitor_settings(
+        state,
+        &RuleMonitorSettings {
+            enabled: true,
+            interval_seconds,
+            execute,
+            updated_at_unix: now,
+        },
+    )?;
 
     let mut runtime = state.rule_monitor.lock().await;
     if let Some(handle) = runtime.handle.take() {
@@ -218,6 +266,7 @@ pub async fn start_monitor(
     runtime.status.last_stopped_at_unix = None;
     runtime.status.next_check_at_unix = Some(now);
     runtime.status.last_error = None;
+    runtime.status.consecutive_error_count = 0;
 
     let handle = tokio::spawn(async move {
         monitor_loop(worker_state, interval_seconds, execute).await;
@@ -236,6 +285,15 @@ pub async fn stop_monitor(state: &AppState) -> RuleMonitorStatus {
     runtime.status.running = false;
     runtime.status.last_stopped_at_unix = Some(unix_now());
     runtime.status.next_check_at_unix = None;
+    let _ = write_monitor_settings(
+        state,
+        &RuleMonitorSettings {
+            enabled: false,
+            interval_seconds: runtime.status.interval_seconds,
+            execute: runtime.status.execute,
+            updated_at_unix: unix_now(),
+        },
+    );
     runtime.status.clone()
 }
 
@@ -264,13 +322,31 @@ async fn monitor_loop(state: AppState, interval_seconds: u64, execute: bool) {
                 match check_result {
                     Ok(response) => {
                         runtime.status.last_error = None;
+                        runtime.status.consecutive_error_count = 0;
                         runtime.status.last_response = Some(response);
+                        true
                     }
                     Err((_, Json(error))) => {
                         runtime.status.last_error = Some(error.message);
+                        runtime.status.consecutive_error_count += 1;
+                        if runtime.status.consecutive_error_count >= 3 {
+                            runtime.status.running = false;
+                            runtime.status.next_check_at_unix = None;
+                            let _ = write_monitor_settings(
+                                &state,
+                                &RuleMonitorSettings {
+                                    enabled: false,
+                                    interval_seconds,
+                                    execute,
+                                    updated_at_unix: unix_now(),
+                                },
+                            );
+                            false
+                        } else {
+                            true
+                        }
                     }
                 }
-                true
             }
         };
 
@@ -280,6 +356,59 @@ async fn monitor_loop(state: AppState, interval_seconds: u64, execute: bool) {
 
         sleep(Duration::from_secs(interval_seconds)).await;
     }
+}
+
+fn read_monitor_settings(state: &AppState) -> ApiResult<RuleMonitorSettings> {
+    let path = &state.config.auto_rule_monitor_settings_path;
+    if !Path::new(path).exists() {
+        return Ok(RuleMonitorSettings {
+            enabled: false,
+            interval_seconds: state
+                .config
+                .auto_rule_monitor_interval_seconds
+                .clamp(10, 3600),
+            execute: false,
+            updated_at_unix: 0,
+        });
+    }
+
+    let content = fs::read_to_string(path)
+        .map_err(|error| file_error("rule_monitor_settings_read_failed", error))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| file_error("rule_monitor_settings_parse_failed", error))?;
+
+    Ok(RuleMonitorSettings {
+        enabled: value
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        interval_seconds: value
+            .get("interval_seconds")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(state.config.auto_rule_monitor_interval_seconds)
+            .clamp(10, 3600),
+        execute: value
+            .get("execute")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        updated_at_unix: value
+            .get("updated_at_unix")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    })
+}
+
+fn write_monitor_settings(state: &AppState, settings: &RuleMonitorSettings) -> ApiResult<()> {
+    let path = &state.config.auto_rule_monitor_settings_path;
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| file_error("rule_monitor_settings_dir_failed", error))?;
+    }
+
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|error| file_error("rule_monitor_settings_serialize_failed", error))?;
+    fs::write(path, format!("{content}\n"))
+        .map_err(|error| file_error("rule_monitor_settings_write_failed", error))
 }
 
 async fn check_rule(
@@ -368,6 +497,18 @@ async fn check_rule(
                 "{} 조건이 충족됐지만 추천 모드라 주문하지 않았습니다.",
                 format_trigger(&rule.trigger)
             ),
+            Some(current_price),
+            false,
+            None,
+        ));
+    }
+
+    if let Some(block_reason) = auto_order_guard(state, rule, current_price, monitor_state)? {
+        return Ok(result(
+            rule,
+            action,
+            "skipped",
+            &block_reason,
             Some(current_price),
             false,
             None,
@@ -483,6 +624,85 @@ fn cooldown_until(
     }
 }
 
+fn auto_order_guard(
+    state: &AppState,
+    rule: &TradingRule,
+    current_price: u64,
+    monitor_state: &RuleMonitorState,
+) -> ApiResult<Option<String>> {
+    let settings = risk_settings::get(state)?;
+    let today = current_utc_day();
+    if let Some(rule_state) = monitor_state.rules.get(&rule.id) {
+        if rule_state.daily_execution_date == Some(today) && rule_state.daily_execution_count >= 1 {
+            return Ok(Some(
+                "이 규칙은 오늘 이미 자동주문을 실행해 추가 주문을 막았습니다.".to_string(),
+            ));
+        }
+    }
+
+    let amount = current_price * u64::from(rule.quantity);
+    let used = monitor_state
+        .symbols
+        .get(&rule.symbol)
+        .filter(|symbol_state| symbol_state.daily_order_date == today)
+        .map(|symbol_state| symbol_state.daily_order_amount_krw)
+        .unwrap_or(0);
+
+    if used.saturating_add(amount) > settings.max_daily_auto_order_amount_krw_per_symbol {
+        return Ok(Some(format!(
+            "종목별 일일 자동주문 한도 {}원을 초과해 주문하지 않았습니다.",
+            settings.max_daily_auto_order_amount_krw_per_symbol
+        )));
+    }
+
+    Ok(None)
+}
+
+fn mark_rule_triggered(
+    monitor_state: &mut RuleMonitorState,
+    rule: &TradingRule,
+    result: &RuleCheckResult,
+    now: u64,
+) {
+    let today = current_utc_day();
+    let rule_state = monitor_state
+        .rules
+        .entry(rule.id.clone())
+        .or_insert(RuleState {
+            last_triggered_at_unix: now,
+            daily_execution_date: None,
+            daily_execution_count: 0,
+        });
+    rule_state.last_triggered_at_unix = now;
+
+    if result.order_submitted {
+        if rule_state.daily_execution_date == Some(today) {
+            rule_state.daily_execution_count += 1;
+        } else {
+            rule_state.daily_execution_date = Some(today);
+            rule_state.daily_execution_count = 1;
+        }
+
+        let amount =
+            result.current_price.unwrap_or(result.target_price) * u64::from(result.quantity);
+        let symbol_state =
+            monitor_state
+                .symbols
+                .entry(rule.symbol.clone())
+                .or_insert(SymbolState {
+                    daily_order_date: today,
+                    daily_order_amount_krw: 0,
+                });
+        if symbol_state.daily_order_date == today {
+            symbol_state.daily_order_amount_krw =
+                symbol_state.daily_order_amount_krw.saturating_add(amount);
+        } else {
+            symbol_state.daily_order_date = today;
+            symbol_state.daily_order_amount_krw = amount;
+        }
+    }
+}
+
 fn summarize(results: &[RuleCheckResult], orders: usize) -> RuleCheckSummary {
     RuleCheckSummary {
         total: results.len(),
@@ -531,6 +751,9 @@ fn prune_monitor_state(state: &mut RuleMonitorState, rules: &[TradingRule]) {
     state
         .rules
         .retain(|rule_id, _| rules.iter().any(|rule| rule.id == *rule_id));
+    state
+        .symbols
+        .retain(|symbol, _| rules.iter().any(|rule| rule.symbol == *symbol));
 }
 
 fn append_check_log(path: &str, response: &RuleCheckResponse) -> ApiResult<()> {
@@ -562,6 +785,10 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+fn current_utc_day() -> u64 {
+    unix_now() / 86_400
 }
 
 fn file_error(
