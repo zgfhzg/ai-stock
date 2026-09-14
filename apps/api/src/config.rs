@@ -29,6 +29,7 @@ pub struct AppConfig {
     pub auto_rule_check_log_path: String,
     pub auto_rule_state_path: String,
     pub auto_rule_cooldown_seconds: u64,
+    pub auto_rule_monitor_interval_seconds: u64,
     pub auto_decision_log_path: String,
     pub auto_min_confidence: f64,
     pub risk_settings_path: String,
@@ -85,6 +86,12 @@ impl AppConfig {
             auto_rule_cooldown_seconds: read_env("AUTO_RULE_COOLDOWN_SECONDS", "600")
                 .parse()
                 .unwrap_or(600),
+            auto_rule_monitor_interval_seconds: read_env(
+                "AUTO_RULE_MONITOR_INTERVAL_SECONDS",
+                "30",
+            )
+            .parse()
+            .unwrap_or(30),
             auto_decision_log_path: read_env(
                 "AUTO_DECISION_LOG_PATH",
                 "../../data/auto-decisions.jsonl",

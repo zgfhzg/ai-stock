@@ -154,6 +154,23 @@ type RuleCheckResponse = {
   results: RuleCheckResult[];
 };
 
+type RuleMonitorStatus = {
+  running: boolean;
+  interval_seconds: number;
+  execute: boolean;
+  last_started_at_unix?: number | null;
+  last_stopped_at_unix?: number | null;
+  last_check_at_unix?: number | null;
+  next_check_at_unix?: number | null;
+  last_error?: string | null;
+  last_response?: RuleCheckResponse | null;
+};
+
+type RuleCheckLog = {
+  timestamp_unix: number;
+  response: RuleCheckResponse;
+};
+
 type MarketTab = "stocks" | "crypto-spot" | "crypto-futures";
 
 type CryptoInstrument = {
@@ -224,10 +241,12 @@ function App() {
   const [ruleTargetPrice, setRuleTargetPrice] = React.useState("");
   const [ruleQuantity, setRuleQuantity] = React.useState("1");
   const [ruleCheck, setRuleCheck] = React.useState<RuleCheckResponse | null>(null);
+  const [ruleCheckLogs, setRuleCheckLogs] = React.useState<RuleCheckLog[]>([]);
   const [ruleChecking, setRuleChecking] = React.useState(false);
-  const [ruleMonitorEnabled, setRuleMonitorEnabled] = React.useState(false);
+  const [ruleMonitor, setRuleMonitor] = React.useState<RuleMonitorStatus | null>(null);
   const [ruleMonitorIntervalSeconds, setRuleMonitorIntervalSeconds] = React.useState(30);
-  const [lastRuleMonitorAt, setLastRuleMonitorAt] = React.useState<Date | null>(null);
+  const [ruleMonitorAutoOrderEnabled, setRuleMonitorAutoOrderEnabled] = React.useState(false);
+  const [ruleMonitorBusy, setRuleMonitorBusy] = React.useState(false);
   const ruleCheckInFlight = React.useRef(false);
   const [riskForm, setRiskForm] = React.useState({
     max_order_amount_krw: "100000",
@@ -260,7 +279,7 @@ function App() {
         return response.json();
       })
       .then(setStatus)
-      .then(() => Promise.all([loadAutoRunLogs(), loadTradingRules()]))
+      .then(() => Promise.all([loadAutoRunLogs(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs()]))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
 
@@ -287,23 +306,13 @@ function App() {
   }, [activeMarket]);
 
   React.useEffect(() => {
-    if (!ruleMonitorEnabled || tradingRules.length === 0) {
-      return;
-    }
-
-    runTradingRuleCheck({ automatic: true });
     const timer = window.setInterval(() => {
-      runTradingRuleCheck({ automatic: true });
-    }, ruleMonitorIntervalSeconds * 1000);
+      loadRuleMonitorStatus();
+      loadRuleCheckLogs();
+    }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [ruleMonitorEnabled, ruleMonitorIntervalSeconds, tradingRules.length]);
-
-  React.useEffect(() => {
-    if (tradingRules.length === 0) {
-      setRuleMonitorEnabled(false);
-    }
-  }, [tradingRules.length]);
+  }, []);
 
   React.useEffect(() => {
     const query = stockQuery.trim();
@@ -447,6 +456,25 @@ function App() {
       .catch(() => setTradingRules([]));
   }
 
+  function loadRuleMonitorStatus() {
+    return fetchJson<RuleMonitorStatus>("/api/auto-trading/rules/monitor")
+      .then((status) => {
+        setRuleMonitor(status);
+        setRuleMonitorIntervalSeconds(status.interval_seconds);
+        setRuleMonitorAutoOrderEnabled(status.execute);
+        if (status.last_response) {
+          setRuleCheck(status.last_response);
+        }
+      })
+      .catch(() => setRuleMonitor(null));
+  }
+
+  function loadRuleCheckLogs() {
+    return fetchJson<RuleCheckLog[]>("/api/auto-trading/rules/monitor/logs")
+      .then(setRuleCheckLogs)
+      .catch(() => setRuleCheckLogs([]));
+  }
+
   function handleAddTradingRule(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -490,10 +518,10 @@ function App() {
   }
 
   function handleCheckTradingRules() {
-    runTradingRuleCheck({ automatic: false });
+    runTradingRuleCheck();
   }
 
-  function runTradingRuleCheck({ automatic }: { automatic: boolean }) {
+  function runTradingRuleCheck() {
     if (ruleCheckInFlight.current) {
       return;
     }
@@ -509,20 +537,44 @@ function App() {
     })
       .then((result) => {
         setRuleCheck(result);
-        if (automatic) {
-          setLastRuleMonitorAt(new Date());
-        }
+        return Promise.all([loadRuleMonitorStatus(), loadRuleCheckLogs()]);
       })
       .catch(() => {
         setError("자동매매 규칙을 점검하지 못했습니다. API와 KIS 연결 상태를 확인하세요.");
-        if (automatic) {
-          setRuleMonitorEnabled(false);
-        }
       })
       .finally(() => {
         ruleCheckInFlight.current = false;
         setRuleChecking(false);
       });
+  }
+
+  function handleStartRuleMonitor() {
+    setError(null);
+    setRuleMonitorBusy(true);
+
+    fetchJson<RuleMonitorStatus>("/api/auto-trading/rules/monitor/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        interval_seconds: ruleMonitorIntervalSeconds,
+        execute: ruleMonitorAutoOrderEnabled,
+      }),
+    })
+      .then(setRuleMonitor)
+      .then(() => loadRuleCheckLogs())
+      .catch(() => setError("백엔드 감시를 시작하지 못했습니다. API 상태를 확인하세요."))
+      .finally(() => setRuleMonitorBusy(false));
+  }
+
+  function handleStopRuleMonitor() {
+    setRuleMonitorBusy(true);
+
+    fetchJson<RuleMonitorStatus>("/api/auto-trading/rules/monitor/stop", {
+      method: "POST",
+    })
+      .then(setRuleMonitor)
+      .catch(() => setError("백엔드 감시를 중지하지 못했습니다."))
+      .finally(() => setRuleMonitorBusy(false));
   }
 
   function handleRiskFormChange(key: keyof typeof riskForm, value: string) {
@@ -925,26 +977,36 @@ function App() {
             </div>
             <div className="rule-monitor-toolbar">
               <button
-                className={ruleMonitorEnabled ? "stop" : ""}
+                className={ruleMonitor?.running ? "stop" : ""}
                 type="button"
-                onClick={() => setRuleMonitorEnabled((enabled) => !enabled)}
-                disabled={tradingRules.length === 0}
+                onClick={ruleMonitor?.running ? handleStopRuleMonitor : handleStartRuleMonitor}
+                disabled={ruleMonitorBusy || (tradingRules.length === 0 && !ruleMonitor?.running)}
               >
-                {ruleMonitorEnabled ? "감시 중지" : "감시 시작"}
+                {ruleMonitor?.running ? "감시 중지" : "감시 시작"}
               </button>
               <select
                 aria-label="감시 주기"
                 value={ruleMonitorIntervalSeconds}
                 onChange={(event) => setRuleMonitorIntervalSeconds(Number(event.target.value))}
+                disabled={ruleMonitor?.running || ruleMonitorBusy}
               >
                 <option value={10}>10초</option>
                 <option value={30}>30초</option>
                 <option value={60}>1분</option>
                 <option value={300}>5분</option>
               </select>
+              <label className="rule-auto-order-toggle">
+                <input
+                  checked={ruleMonitorAutoOrderEnabled}
+                  disabled={ruleMonitor?.running || ruleMonitorBusy}
+                  type="checkbox"
+                  onChange={(event) => setRuleMonitorAutoOrderEnabled(event.target.checked)}
+                />
+                <span>모의 주문</span>
+              </label>
               <div>
-                <strong>{ruleMonitorEnabled ? `${ruleMonitorIntervalSeconds}초마다 감시 중` : "감시 대기"}</strong>
-                <span>{lastRuleMonitorAt ? `마지막 점검 ${formatClock(lastRuleMonitorAt)}` : "아직 자동 점검 전"}</span>
+                <strong>{formatRuleMonitorTitle(ruleMonitor, ruleMonitorIntervalSeconds, ruleMonitorAutoOrderEnabled)}</strong>
+                <span>{formatRuleMonitorDetail(ruleMonitor, status?.trading_mode)}</span>
               </div>
             </div>
             {ruleCheck ? (
@@ -964,6 +1026,28 @@ function App() {
                 ))}
               </div>
             ) : null}
+            <div className="rule-log-header">
+              <strong>최근 감시 로그</strong>
+              <span>{ruleCheckLogs.length > 0 ? `최근 ${ruleCheckLogs.length}회` : "기록 없음"}</span>
+            </div>
+            {ruleCheckLogs.length > 0 ? (
+              <div className="rule-log-list">
+                {ruleCheckLogs.slice(0, 5).map((log, index) => (
+                  <article className="rule-log-row" key={`${log.timestamp_unix}-${index}`}>
+                    <div>
+                      <strong>{formatRunTime(log.timestamp_unix)}</strong>
+                      <span>{formatMode(log.response.mode, log.response.executed)}</span>
+                    </div>
+                    <div>
+                      <strong>{formatRuleCheckSummary(log.response)}</strong>
+                      <span>{formatRuleLogHighlight(log.response)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">감시를 시작하거나 1회 점검하면 기록이 여기에 쌓입니다.</div>
+            )}
           </div>
 
           <div className="panel wide">
@@ -1429,6 +1513,55 @@ function formatRuleTrigger(trigger: TradingRuleTrigger) {
 
 function formatRuleCheckSummary(check: RuleCheckResponse) {
   return `충족 ${check.summary.matched} · 대기 ${check.summary.waiting} · 쿨다운 ${check.summary.cooldown} · 주문 ${check.summary.orders}`;
+}
+
+function formatRuleLogHighlight(check: RuleCheckResponse) {
+  const important =
+    check.results.find((result) => result.status === "order_submitted") ??
+    check.results.find((result) => result.status === "order_rejected") ??
+    check.results.find((result) => result.status === "matched") ??
+    check.results.find((result) => result.status === "cooldown") ??
+    check.results.find((result) => result.status === "skipped") ??
+    check.results[0];
+
+  if (!important) {
+    return "점검할 규칙이 없습니다.";
+  }
+
+  return `${important.name} · ${formatRuleStatus(important.status)} · ${formatRuleCheckReason(important)}`;
+}
+
+function formatRuleMonitorTitle(
+  status: RuleMonitorStatus | null,
+  selectedIntervalSeconds: number,
+  autoOrderEnabled: boolean,
+) {
+  const suffix = autoOrderEnabled ? " · 모의 주문 ON" : " · 확인만";
+  if (status?.running) {
+    return `${status.interval_seconds}초마다 백엔드 감시 중${suffix}`;
+  }
+  return `백엔드 감시 대기 · ${selectedIntervalSeconds}초${suffix}`;
+}
+
+function formatRuleMonitorDetail(status: RuleMonitorStatus | null, tradingMode?: string) {
+  if (status?.last_error) {
+    return `최근 오류: ${status.last_error}`;
+  }
+  if (status?.execute && tradingMode !== "paper_auto") {
+    return "모의 주문은 AUTO_TRADE_MODE=paper_auto에서만 실행됩니다.";
+  }
+  if (status?.last_check_at_unix) {
+    const next = status.next_check_at_unix ? ` · 다음 ${formatClockFromUnix(status.next_check_at_unix)}` : "";
+    return `마지막 점검 ${formatClockFromUnix(status.last_check_at_unix)}${next}`;
+  }
+  if (status?.running) {
+    return "곧 첫 점검을 시작합니다.";
+  }
+  return "브라우저를 닫아도 API 서버가 켜져 있으면 감시할 수 있습니다.";
+}
+
+function formatClockFromUnix(timestampUnix: number) {
+  return formatClock(new Date(timestampUnix * 1000));
 }
 
 function formatRuleStatus(status: string) {

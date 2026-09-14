@@ -630,7 +630,7 @@ h2 {
 
 .rule-monitor-toolbar {
   display: grid;
-  grid-template-columns: 100px 92px minmax(0, 1fr);
+  grid-template-columns: 100px 92px 104px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   margin-top: 10px;
@@ -668,6 +668,34 @@ h2 {
 
 .rule-monitor-toolbar select {
   padding: 0 8px;
+}
+
+.rule-auto-order-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17211a;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.rule-auto-order-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #245f45;
+}
+
+.rule-auto-order-toggle:has(input:disabled) {
+  opacity: 0.55;
 }
 
 .rule-monitor-toolbar div {
@@ -718,6 +746,59 @@ h2 {
 
 .rule-check-row strong,
 .rule-check-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.rule-log-header strong {
+  font-size: 14px;
+}
+
+.rule-log-header span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-log-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rule-log-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.65fr) minmax(0, 1.4fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.rule-log-row div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-log-row span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.rule-log-row strong,
+.rule-log-row span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -919,6 +1000,7 @@ h2 {
   .rule-form,
   .rule-row,
   .rule-check-row,
+  .rule-log-row,
   .crypto-order-form,
   .crypto-order-form.futures,
   .crypto-market-row,
@@ -932,6 +1014,8 @@ h2 {
   .rule-form button,
   .rule-row button,
   .rule-check-toolbar button,
+  .rule-monitor-toolbar button,
+  .rule-auto-order-toggle,
   .crypto-order-form button {
     width: 100%;
   }

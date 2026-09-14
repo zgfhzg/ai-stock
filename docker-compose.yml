@@ -6,12 +6,19 @@ services:
       - .env
     environment:
       - STRATEGY_URL=http://strategy:8090
+      - API_PORT=8080
     ports:
       - "8080:8080"
     volumes:
       - ./data:/data
     depends_on:
-      - strategy
+      strategy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ai-stock-api", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   strategy:
@@ -23,6 +30,17 @@ services:
       - "8090:8090"
     volumes:
       - ./data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   web:
@@ -31,5 +49,17 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped

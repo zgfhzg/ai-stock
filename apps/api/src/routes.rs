@@ -15,7 +15,10 @@ use crate::{
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
     risk_settings::{self, RiskSettings, RiskSettingsInput},
-    rule_monitor::{self, RuleCheckRequest, RuleCheckResponse},
+    rule_monitor::{
+        self, RuleCheckLog, RuleCheckRequest, RuleCheckResponse, RuleMonitorStartRequest,
+        RuleMonitorStatus,
+    },
     state::AppState,
     stocks::{self, Stock},
     strategy::{self, ProposalRequest, ProposalResponse, StrategyHealth},
@@ -56,6 +59,19 @@ pub fn app_router() -> Router<AppState> {
             get(trading_rule_list).post(add_trading_rule),
         )
         .route("/api/auto-trading/rules/check", post(check_trading_rules))
+        .route("/api/auto-trading/rules/monitor", get(rule_monitor_status))
+        .route(
+            "/api/auto-trading/rules/monitor/logs",
+            get(rule_monitor_logs),
+        )
+        .route(
+            "/api/auto-trading/rules/monitor/start",
+            post(start_rule_monitor),
+        )
+        .route(
+            "/api/auto-trading/rules/monitor/stop",
+            post(stop_rule_monitor),
+        )
         .route("/api/auto-trading/rules/:id", delete(remove_trading_rule))
         .route("/api/ai/proposal", post(proposal))
 }
@@ -241,6 +257,25 @@ async fn check_trading_rules(
     Json(request): Json<RuleCheckRequest>,
 ) -> ApiResult<Json<RuleCheckResponse>> {
     Ok(Json(rule_monitor::check_once(&state, request).await?))
+}
+
+async fn rule_monitor_status(State(state): State<AppState>) -> Json<RuleMonitorStatus> {
+    Json(rule_monitor::monitor_status(&state).await)
+}
+
+async fn rule_monitor_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<RuleCheckLog>>> {
+    Ok(Json(rule_monitor::list_logs(&state)?))
+}
+
+async fn start_rule_monitor(
+    State(state): State<AppState>,
+    Json(request): Json<RuleMonitorStartRequest>,
+) -> ApiResult<Json<RuleMonitorStatus>> {
+    Ok(Json(rule_monitor::start_monitor(&state, request).await?))
+}
+
+async fn stop_rule_monitor(State(state): State<AppState>) -> Json<RuleMonitorStatus> {
+    Json(rule_monitor::stop_monitor(&state).await)
 }
 
 async fn proposal(

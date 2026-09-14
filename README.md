@@ -19,7 +19,7 @@
 3. Docker Compose로 실행합니다.
 
 ```sh
-docker compose up --build
+make up
 ```
 
 서비스 주소:
@@ -30,6 +30,8 @@ docker compose up --build
 
 인앱 브라우저에서 `localhost:3000`이 이전 앱 화면을 보여주거나 계속 로딩되면 `http://127.0.0.1:3000`으로 접속합니다.
 
+라즈베리파이에 올려서 재부팅 후 자동 시작까지 설정하려면 [Raspberry Pi 운영 가이드](docs/raspberry-pi.md)를 따릅니다.
+
 ## 운영 원칙
 
 - 실전 주문은 기본 OFF입니다.
@@ -37,6 +39,7 @@ docker compose up --build
 - 모든 주문 판단과 API 응답은 로그로 남깁니다.
 - 하루 손실 한도에 도달하면 자동매매를 멈춥니다.
 - Raspberry Pi와 VPS 모두 같은 Docker Compose 구조로 실행합니다.
+- 운영용 웹 컨테이너는 개발 서버가 아니라 빌드된 정적 파일을 서빙합니다.
 
 ## 한국투자증권 모의투자 연동
 
@@ -67,11 +70,15 @@ docker compose up --build
 - `GET /api/auto-trading/rules`: 조건 기반 자동매매 규칙 조회
 - `POST /api/auto-trading/rules`: 조건 기반 자동매매 규칙 추가
 - `POST /api/auto-trading/rules/check`: 저장된 규칙을 현재가와 비교해 1회 점검
+- `GET /api/auto-trading/rules/monitor`: 백엔드 규칙 감시 상태 조회
+- `GET /api/auto-trading/rules/monitor/logs`: 최근 규칙 감시 로그 조회
+- `POST /api/auto-trading/rules/monitor/start`: 백엔드 규칙 감시 시작
+- `POST /api/auto-trading/rules/monitor/stop`: 백엔드 규칙 감시 중지
 - `DELETE /api/auto-trading/rules/{id}`: 조건 기반 자동매매 규칙 삭제
 
 초기 전략 엔진은 현재가와 전일 대비 등락률을 받아 단순 규칙으로 판단합니다. 기본값은 추천 전용이며, 전일 대비 큰 하락은 매수 후보, 큰 상승은 매도 후보, 그 외는 관망으로 기록합니다.
 
-조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 브라우저 감시 모드에서는 선택한 주기마다 규칙을 반복 점검하며, 기본 추천 모드에서는 주문 없이 조건 충족 여부만 기록합니다.
+조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 감시는 백엔드 API 서버에서 실행되므로 브라우저를 닫아도 API 서버가 살아 있으면 선택한 주기마다 규칙을 반복 점검합니다. `모의 주문` 토글은 기본 OFF이며, 켜더라도 `AUTO_TRADE_MODE=paper_auto`일 때만 조건 충족 시 모의 주문을 시도합니다.
 같은 규칙이 반복 발동하는 것을 막기 위해 기본 10분 쿨다운을 적용하며, `AUTO_RULE_COOLDOWN_SECONDS`로 조정할 수 있습니다.
 
 종목 검색 목록은 `data/stocks.json`을 사용합니다. 공식 KIS 종목 마스터 기준으로 갱신하려면 아래 명령을 실행합니다.

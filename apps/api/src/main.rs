@@ -24,6 +24,10 @@ use crate::{config::AppConfig, routes::app_router, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|arg| arg == "--healthcheck") {
+        return healthcheck().await;
+    }
+
     config::load_dotenv();
 
     tracing_subscriber::fmt()
@@ -46,6 +50,18 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn healthcheck() -> anyhow::Result<()> {
+    config::load_dotenv();
+    let config = AppConfig::load();
+    let url = format!("http://127.0.0.1:{}/health", config.api_port);
+    let response = reqwest::get(url).await?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("healthcheck failed with {}", response.status())
+    }
 }
 
 fn cors() -> CorsLayer {

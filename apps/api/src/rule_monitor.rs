@@ -8,7 +8,10 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::time::{sleep, Duration};
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, Duration},
+};
 
 use crate::{
     error::ApiResult,
@@ -23,7 +26,56 @@ pub struct RuleCheckRequest {
     pub execute: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize)]
+pub struct RuleMonitorStartRequest {
+    pub interval_seconds: Option<u64>,
+    pub execute: Option<bool>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct RuleMonitorStatus {
+    pub running: bool,
+    pub interval_seconds: u64,
+    pub execute: bool,
+    pub last_started_at_unix: Option<u64>,
+    pub last_stopped_at_unix: Option<u64>,
+    pub last_check_at_unix: Option<u64>,
+    pub next_check_at_unix: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_response: Option<RuleCheckResponse>,
+}
+
+pub struct RuleMonitorRuntime {
+    handle: Option<JoinHandle<()>>,
+    status: RuleMonitorStatus,
+}
+
+impl Default for RuleMonitorRuntime {
+    fn default() -> Self {
+        Self::new(30)
+    }
+}
+
+impl RuleMonitorRuntime {
+    pub fn new(interval_seconds: u64) -> Self {
+        Self {
+            handle: None,
+            status: RuleMonitorStatus {
+                running: false,
+                interval_seconds: interval_seconds.clamp(10, 3600),
+                execute: false,
+                last_started_at_unix: None,
+                last_stopped_at_unix: None,
+                last_check_at_unix: None,
+                next_check_at_unix: None,
+                last_error: None,
+                last_response: None,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub struct RuleCheckResponse {
     pub mode: String,
     pub executed: bool,
@@ -31,7 +83,7 @@ pub struct RuleCheckResponse {
     pub results: Vec<RuleCheckResult>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct RuleCheckSummary {
     pub total: usize,
     pub matched: usize,
@@ -41,7 +93,7 @@ pub struct RuleCheckSummary {
     pub orders: usize,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct RuleCheckResult {
     pub rule_id: String,
     pub symbol: String,
@@ -55,6 +107,12 @@ pub struct RuleCheckResult {
     pub quantity: u32,
     pub order_submitted: bool,
     pub cooldown_until_unix: Option<u64>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct RuleCheckLog {
+    pub timestamp_unix: u64,
+    pub response: RuleCheckResponse,
 }
 
 #[derive(Serialize)]
@@ -116,6 +174,112 @@ pub async fn check_once(
 
     append_check_log(&state.config.auto_rule_check_log_path, &response)?;
     Ok(response)
+}
+
+pub async fn monitor_status(state: &AppState) -> RuleMonitorStatus {
+    state.rule_monitor.lock().await.status.clone()
+}
+
+pub fn list_logs(state: &AppState) -> ApiResult<Vec<RuleCheckLog>> {
+    let path = &state.config.auto_rule_check_log_path;
+    if !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path)
+        .map_err(|error| file_error("rule_check_log_read_failed", error))?;
+    let mut rows = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RuleCheckLog>(line).ok())
+        .collect::<Vec<_>>();
+    rows.reverse();
+    rows.truncate(20);
+    Ok(rows)
+}
+
+pub async fn start_monitor(
+    state: &AppState,
+    request: RuleMonitorStartRequest,
+) -> ApiResult<RuleMonitorStatus> {
+    let interval_seconds = request.interval_seconds.unwrap_or(30).clamp(10, 3600);
+    let execute = request.execute.unwrap_or(false);
+    let now = unix_now();
+    let worker_state = state.clone();
+
+    let mut runtime = state.rule_monitor.lock().await;
+    if let Some(handle) = runtime.handle.take() {
+        handle.abort();
+    }
+
+    runtime.status.running = true;
+    runtime.status.interval_seconds = interval_seconds;
+    runtime.status.execute = execute;
+    runtime.status.last_started_at_unix = Some(now);
+    runtime.status.last_stopped_at_unix = None;
+    runtime.status.next_check_at_unix = Some(now);
+    runtime.status.last_error = None;
+
+    let handle = tokio::spawn(async move {
+        monitor_loop(worker_state, interval_seconds, execute).await;
+    });
+    runtime.handle = Some(handle);
+
+    Ok(runtime.status.clone())
+}
+
+pub async fn stop_monitor(state: &AppState) -> RuleMonitorStatus {
+    let mut runtime = state.rule_monitor.lock().await;
+    if let Some(handle) = runtime.handle.take() {
+        handle.abort();
+    }
+
+    runtime.status.running = false;
+    runtime.status.last_stopped_at_unix = Some(unix_now());
+    runtime.status.next_check_at_unix = None;
+    runtime.status.clone()
+}
+
+async fn monitor_loop(state: AppState, interval_seconds: u64, execute: bool) {
+    loop {
+        let started_at = unix_now();
+        {
+            let mut runtime = state.rule_monitor.lock().await;
+            runtime.status.running = true;
+            runtime.status.last_check_at_unix = Some(started_at);
+            runtime.status.next_check_at_unix = Some(started_at + interval_seconds);
+        }
+
+        let check_result = check_once(
+            &state,
+            RuleCheckRequest {
+                execute: Some(execute),
+            },
+        )
+        .await;
+        let should_continue = {
+            let mut runtime = state.rule_monitor.lock().await;
+            if !runtime.status.running {
+                false
+            } else {
+                match check_result {
+                    Ok(response) => {
+                        runtime.status.last_error = None;
+                        runtime.status.last_response = Some(response);
+                    }
+                    Err((_, Json(error))) => {
+                        runtime.status.last_error = Some(error.message);
+                    }
+                }
+                true
+            }
+        };
+
+        if !should_continue {
+            break;
+        }
+
+        sleep(Duration::from_secs(interval_seconds)).await;
+    }
 }
 
 async fn check_rule(
