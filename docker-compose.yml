@@ -47,7 +47,7 @@ services:
     build:
       context: ./apps/web
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy

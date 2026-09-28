@@ -314,6 +314,66 @@ h2 {
   font-size: 20px;
 }
 
+.holdings-list {
+  display: grid;
+  gap: 8px;
+}
+
+.holdings-header,
+.holding-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.15fr) minmax(120px, 0.95fr) minmax(100px, 0.85fr) minmax(100px, 0.8fr) minmax(180px, 1.25fr) minmax(120px, 0.9fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.holdings-header {
+  padding: 0 12px 6px;
+  color: #657066;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.holding-row {
+  min-height: 72px;
+  padding: 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+}
+
+.holding-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.holding-row strong,
+.holding-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.holding-row small,
+.holding-row span {
+  color: #657066;
+  font-size: 12px;
+}
+
+.holding-row small {
+  display: none;
+}
+
+.holding-profit.positive strong,
+.holding-profit.positive span {
+  color: #b33a2b;
+}
+
+.holding-profit.negative strong,
+.holding-profit.negative span {
+  color: #2867a8;
+}
+
 .quote-box {
   min-height: 160px;
   display: grid;
@@ -970,6 +1030,22 @@ h2 {
     grid-template-columns: 1fr 1fr;
   }
 
+  .holdings-header {
+    display: none;
+  }
+
+  .holding-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .holding-name {
+    grid-column: 1 / -1;
+  }
+
+  .holding-row small {
+    display: block;
+  }
+
 }
 
 @media (max-width: 640px) {
@@ -1035,6 +1111,14 @@ h2 {
 
   .stock-suggestions span {
     text-align: left;
+  }
+
+  .holding-row {
+    grid-template-columns: 1fr;
+  }
+
+  .holding-name {
+    grid-column: auto;
   }
 
   .quote-row div:nth-child(2) {

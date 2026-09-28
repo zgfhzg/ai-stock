@@ -56,6 +56,19 @@ type KisApiResponse = {
   output2?: Array<Record<string, string>> | null;
 };
 
+type DomesticHolding = {
+  pdno?: string;
+  prdt_name?: string;
+  hldg_qty?: string;
+  ord_psbl_qty?: string;
+  pchs_avg_pric?: string;
+  prpr?: string;
+  pchs_amt?: string;
+  evlu_amt?: string;
+  evlu_pfls_amt?: string;
+  evlu_pfls_rt?: string;
+};
+
 type WatchlistItem = {
   symbol: string;
   name: string;
@@ -312,6 +325,7 @@ function App() {
   const [cryptoOrderResult, setCryptoOrderResult] = React.useState<CryptoOrderResponse | null>(null);
   const [cryptoOrderLogs, setCryptoOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const accountSummary = dashboardData.balance?.output2?.[0];
+  const domesticHoldings = (dashboardData.balance?.output1 ?? []) as DomesticHolding[];
   const cryptoMarketType = activeMarket === "crypto-futures" ? "futures" : "spot";
 
   React.useEffect(() => {
@@ -875,6 +889,56 @@ function App() {
                 );
               })}
             </div>
+          </div>
+
+          <div className="panel wide">
+            <div className="panel-header">
+              <h2>보유 주식</h2>
+              <span>{domesticHoldings.length}종목</span>
+            </div>
+            {domesticHoldings.length > 0 ? (
+              <div className="holdings-list">
+                <div className="holdings-header" aria-hidden="true">
+                  <span>종목</span>
+                  <span>보유 / 주문가능</span>
+                  <span>평균 매수가</span>
+                  <span>현재가</span>
+                  <span>매입 / 평가금액</span>
+                  <span>평가손익</span>
+                </div>
+                {domesticHoldings.map((holding) => (
+                  <article className="holding-row" key={holding.pdno}>
+                    <div className="holding-name">
+                      <strong>{holding.prdt_name ?? "종목명 없음"}</strong>
+                      <span>{holding.pdno ?? "-"}</span>
+                    </div>
+                    <div>
+                      <small>보유 / 주문가능</small>
+                      <strong>{formatQuantity(holding.hldg_qty)}주 / {formatQuantity(holding.ord_psbl_qty)}주</strong>
+                    </div>
+                    <div>
+                      <small>평균 매수가</small>
+                      <strong>{formatKrwText(holding.pchs_avg_pric)}</strong>
+                    </div>
+                    <div>
+                      <small>현재가</small>
+                      <strong>{formatKrwText(holding.prpr)}</strong>
+                    </div>
+                    <div>
+                      <small>매입 / 평가금액</small>
+                      <strong>{formatKrwText(holding.pchs_amt)} / {formatKrwText(holding.evlu_amt)}</strong>
+                    </div>
+                    <div className={formatProfitClass(holding.evlu_pfls_amt)}>
+                      <small>평가손익</small>
+                      <strong>{formatSignedKrw(holding.evlu_pfls_amt)}</strong>
+                      <span>{formatSignedPercentText(holding.evlu_pfls_rt)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">현재 보유 중인 국내 주식이 없습니다.</div>
+            )}
           </div>
 
           <div className="panel wide">
@@ -1704,6 +1768,36 @@ function formatKrwText(value?: string) {
   }
 
   return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(numberValue);
+}
+
+function formatQuantity(value?: string) {
+  const numberValue = Number(value ?? "");
+  return Number.isFinite(numberValue) ? new Intl.NumberFormat("ko-KR").format(numberValue) : "-";
+}
+
+function formatSignedKrw(value?: string) {
+  const numberValue = Number(value ?? "");
+  if (!Number.isFinite(numberValue)) {
+    return "-";
+  }
+  const prefix = numberValue > 0 ? "+" : "";
+  return `${prefix}${formatKrw(numberValue)}`;
+}
+
+function formatSignedPercentText(value?: string) {
+  const numberValue = Number(value ?? "");
+  if (!Number.isFinite(numberValue)) {
+    return "-";
+  }
+  const prefix = numberValue > 0 ? "+" : "";
+  return `${prefix}${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(numberValue)}%`;
+}
+
+function formatProfitClass(value?: string) {
+  const numberValue = Number(value ?? "");
+  if (numberValue > 0) return "holding-profit positive";
+  if (numberValue < 0) return "holding-profit negative";
+  return "holding-profit";
 }
 
 function formatUsdt(value?: number) {
