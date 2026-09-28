@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub watchlist_path: String,
     pub stock_catalog_path: String,
     pub order_log_path: String,
+    pub overseas_order_log_path: String,
     pub crypto_order_log_path: String,
     pub auto_trade_mode: String,
     pub auto_rules_path: String,
@@ -34,6 +35,7 @@ pub struct AppConfig {
     pub auto_decision_log_path: String,
     pub auto_min_confidence: f64,
     pub risk_settings_path: String,
+    pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
     pub max_daily_auto_order_amount_krw_per_symbol: u64,
@@ -71,6 +73,10 @@ impl AppConfig {
             watchlist_path: read_env("WATCHLIST_PATH", "../../data/watchlist.json"),
             stock_catalog_path: read_env("STOCK_CATALOG_PATH", "../../data/stocks.json"),
             order_log_path: read_env("ORDER_LOG_PATH", "../../data/orders.jsonl"),
+            overseas_order_log_path: read_env(
+                "OVERSEAS_ORDER_LOG_PATH",
+                "../../data/overseas-orders.jsonl",
+            ),
             crypto_order_log_path: read_env(
                 "CRYPTO_ORDER_LOG_PATH",
                 "../../data/crypto-orders.jsonl",
@@ -106,6 +112,9 @@ impl AppConfig {
                 .parse()
                 .unwrap_or(0.7),
             risk_settings_path: read_env("RISK_SETTINGS_PATH", "../../data/risk-settings.json"),
+            max_overseas_order_amount_usd: read_env("MAX_OVERSEAS_ORDER_AMOUNT_USD", "100")
+                .parse()
+                .unwrap_or(100.0),
             max_crypto_order_amount_usdt: read_env("MAX_CRYPTO_ORDER_AMOUNT_USDT", "100")
                 .parse()
                 .unwrap_or(100.0),

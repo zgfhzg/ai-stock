@@ -330,7 +330,7 @@ fn ensure_account_configured(config: &AppConfig) -> ApiResult<()> {
     Ok(())
 }
 
-async fn kis_get(
+pub(crate) async fn kis_get(
     state: &AppState,
     path: &str,
     tr_id: &str,
@@ -354,7 +354,12 @@ async fn kis_get(
     parse_kis_response(response).await
 }
 
-async fn kis_post(state: &AppState, path: &str, tr_id: &str, body: Value) -> ApiResult<Value> {
+pub(crate) async fn kis_post(
+    state: &AppState,
+    path: &str,
+    tr_id: &str,
+    body: Value,
+) -> ApiResult<Value> {
     let token = get_access_token(state).await?;
     let url = format!("{}{}", state.config.kis_base_url, path);
     let response = state
@@ -412,7 +417,7 @@ async fn parse_kis_response(response: Response) -> ApiResult<Value> {
     Ok(value)
 }
 
-fn to_kis_response(value: Value) -> KisApiResponse {
+pub(crate) fn to_kis_response(value: Value) -> KisApiResponse {
     KisApiResponse {
         rt_cd: value
             .get("rt_cd")

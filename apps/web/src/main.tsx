@@ -40,6 +40,7 @@ type SystemStatus = {
     max_position_ratio: number;
     daily_max_loss_ratio: number;
     daily_max_order_count: number;
+    max_overseas_order_amount_usd: number;
     max_crypto_order_amount_usdt: number;
   };
 };
@@ -176,7 +177,33 @@ type RuleCheckLog = {
   response: RuleCheckResponse;
 };
 
-type MarketTab = "stocks" | "crypto-spot" | "crypto-futures";
+type MarketTab = "stocks" | "overseas-stocks" | "crypto-spot" | "crypto-futures";
+
+type OverseasInstrument = {
+  symbol: string;
+  name: string;
+  exchange_code: string;
+  order_exchange_code: string;
+  market: string;
+  currency: string;
+};
+
+type OverseasQuote = OverseasInstrument & {
+  output?: Record<string, string> | null;
+};
+
+type OverseasOrderResponse = {
+  accepted: boolean;
+  mode: string;
+  side: string;
+  symbol: string;
+  exchange_code: string;
+  quantity: number;
+  price: number;
+  order_amount_usd: number;
+  status: string;
+  message: string;
+};
 
 type CryptoInstrument = {
   symbol: string;
@@ -259,10 +286,21 @@ function App() {
     max_position_ratio: "20",
     daily_max_loss_ratio: "3",
     daily_max_order_count: "20",
+    max_overseas_order_amount_usd: "100",
     max_crypto_order_amount_usdt: "100",
   });
   const [riskSaving, setRiskSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [overseasInstruments, setOverseasInstruments] = React.useState<OverseasInstrument[]>([]);
+  const [overseasQuotes, setOverseasQuotes] = React.useState<Record<string, OverseasQuote>>({});
+  const [overseasQuoteErrors, setOverseasQuoteErrors] = React.useState<Record<string, string>>({});
+  const [overseasOrderSymbol, setOverseasOrderSymbol] = React.useState("AAPL");
+  const [overseasOrderExchange, setOverseasOrderExchange] = React.useState("NASD");
+  const [overseasOrderSide, setOverseasOrderSide] = React.useState("buy");
+  const [overseasOrderQuantity, setOverseasOrderQuantity] = React.useState("1");
+  const [overseasOrderPrice, setOverseasOrderPrice] = React.useState("");
+  const [overseasOrderResult, setOverseasOrderResult] = React.useState<OverseasOrderResponse | null>(null);
+  const [overseasOrderLogs, setOverseasOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const [cryptoInstruments, setCryptoInstruments] = React.useState<CryptoInstrument[]>([]);
   const [cryptoQuotes, setCryptoQuotes] = React.useState<Record<string, CryptoQuote>>({});
   const [cryptoQuoteErrors, setCryptoQuoteErrors] = React.useState<Record<string, string>>({});
@@ -304,11 +342,19 @@ function App() {
   }, [status?.risk]);
 
   React.useEffect(() => {
-    if (activeMarket === "stocks") {
+    if (activeMarket === "stocks" || activeMarket === "overseas-stocks") {
       return;
     }
 
     loadCryptoMarketData(cryptoMarketType);
+  }, [activeMarket]);
+
+  React.useEffect(() => {
+    if (activeMarket !== "overseas-stocks") {
+      return;
+    }
+
+    loadOverseasMarketData();
   }, [activeMarket]);
 
   React.useEffect(() => {
@@ -611,6 +657,49 @@ function App() {
       .finally(() => setRiskSaving(false));
   }
 
+  function loadOverseasMarketData() {
+    setError(null);
+
+    fetchJson<OverseasInstrument[]>("/api/overseas-stocks/instruments")
+      .then(async (items) => {
+        const { quotes, quoteErrors } = await loadOverseasQuotes(items);
+        setOverseasInstruments(items);
+        setOverseasQuotes(quotes);
+        setOverseasQuoteErrors(quoteErrors);
+        if (items[0]) {
+          setOverseasOrderSymbol(items[0].symbol);
+          setOverseasOrderExchange(items[0].order_exchange_code);
+        }
+        return fetchJson<Array<Record<string, unknown>>>("/api/overseas-stocks/orders");
+      })
+      .then(setOverseasOrderLogs)
+      .catch(() => setError("해외주식 시장 데이터를 불러오지 못했습니다."));
+  }
+
+  function handlePlaceOverseasOrder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setOverseasOrderResult(null);
+
+    fetchJson<OverseasOrderResponse>("/api/overseas-stocks/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        side: overseasOrderSide,
+        symbol: overseasOrderSymbol,
+        exchange_code: overseasOrderExchange,
+        quantity: Number(overseasOrderQuantity),
+        price: Number(overseasOrderPrice),
+      }),
+    })
+      .then((result) => {
+        setOverseasOrderResult(result);
+        return fetchJson<Array<Record<string, unknown>>>("/api/overseas-stocks/orders");
+      })
+      .then(setOverseasOrderLogs)
+      .catch(() => setError("해외주식 주문을 기록하지 못했습니다. 수량, 가격, 한도를 확인하세요."));
+  }
+
   function loadCryptoMarketData(marketType: "spot" | "futures") {
     setError(null);
 
@@ -664,7 +753,10 @@ function App() {
         </div>
         <nav>
           <button className={activeMarket === "stocks" ? "active" : ""} type="button" onClick={() => setActiveMarket("stocks")}>
-            주식
+            국내 주식
+          </button>
+          <button className={activeMarket === "overseas-stocks" ? "active" : ""} type="button" onClick={() => setActiveMarket("overseas-stocks")}>
+            해외 주식
           </button>
           <button className={activeMarket === "crypto-spot" ? "active" : ""} type="button" onClick={() => setActiveMarket("crypto-spot")}>
             코인 현물
@@ -686,7 +778,9 @@ function App() {
           <button className="danger-toggle" type="button">
             {activeMarket === "stocks"
               ? "주식 실전 주문 OFF"
-              : status?.crypto.live_trading_enabled
+              : activeMarket === "overseas-stocks"
+                ? "해외주식 실전 주문 OFF"
+                : status?.crypto.live_trading_enabled
                 ? "코인 실전 주문 ON"
                 : "코인 실전 주문 OFF"}
           </button>
@@ -699,9 +793,9 @@ function App() {
           <Metric icon={<Bot />} label="AI 전략 엔진" value={status?.strategy.status ?? "확인 중"} />
           <Metric icon={<ShieldCheck />} label="거래 모드" value={status?.trading_mode ?? "확인 중"} />
           <Metric
-            icon={activeMarket === "stocks" ? <Activity /> : <Coins />}
-            label={activeMarket === "stocks" ? "KIS 연동" : status?.crypto.exchange ?? "거래소"}
-            value={activeMarket === "stocks" ? (status?.kis?.configured ? "설정됨" : "설정 필요") : "공개 시세"}
+            icon={activeMarket === "crypto-spot" || activeMarket === "crypto-futures" ? <Coins /> : <Activity />}
+            label={activeMarket === "crypto-spot" || activeMarket === "crypto-futures" ? status?.crypto.exchange ?? "거래소" : "KIS 연동"}
+            value={activeMarket === "crypto-spot" || activeMarket === "crypto-futures" ? "공개 시세" : (status?.kis?.configured ? "설정됨" : "설정 필요")}
           />
         </section>
 
@@ -903,6 +997,16 @@ function App() {
                   type="number"
                   value={riskForm.daily_max_order_count}
                   onChange={(event) => handleRiskFormChange("daily_max_order_count", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>해외주식 1회 한도</span>
+                <input
+                  inputMode="decimal"
+                  min="1"
+                  type="number"
+                  value={riskForm.max_overseas_order_amount_usd}
+                  onChange={(event) => handleRiskFormChange("max_overseas_order_amount_usd", event.target.value)}
                 />
               </label>
               <label>
@@ -1129,6 +1233,27 @@ function App() {
             )}
           </div>
         </section>
+        ) : activeMarket === "overseas-stocks" ? (
+          <OverseasWorkspace
+            instruments={overseasInstruments}
+            orderExchange={overseasOrderExchange}
+            orderLogs={overseasOrderLogs}
+            orderPrice={overseasOrderPrice}
+            orderQuantity={overseasOrderQuantity}
+            orderResult={overseasOrderResult}
+            orderSide={overseasOrderSide}
+            orderSymbol={overseasOrderSymbol}
+            quoteErrors={overseasQuoteErrors}
+            quotes={overseasQuotes}
+            status={status}
+            onOrderExchangeChange={setOverseasOrderExchange}
+            onOrderPriceChange={setOverseasOrderPrice}
+            onOrderQuantityChange={setOverseasOrderQuantity}
+            onOrderSideChange={setOverseasOrderSide}
+            onOrderSymbolChange={setOverseasOrderSymbol}
+            onRefresh={loadOverseasMarketData}
+            onSubmitOrder={handlePlaceOverseasOrder}
+          />
         ) : (
           <CryptoWorkspace
             instruments={cryptoInstruments}
@@ -1370,6 +1495,197 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   );
 }
 
+function OverseasWorkspace({
+  instruments,
+  orderExchange,
+  orderLogs,
+  orderPrice,
+  orderQuantity,
+  orderResult,
+  orderSide,
+  orderSymbol,
+  quoteErrors,
+  quotes,
+  status,
+  onOrderExchangeChange,
+  onOrderPriceChange,
+  onOrderQuantityChange,
+  onOrderSideChange,
+  onOrderSymbolChange,
+  onRefresh,
+  onSubmitOrder,
+}: {
+  instruments: OverseasInstrument[];
+  orderExchange: string;
+  orderLogs: Array<Record<string, unknown>>;
+  orderPrice: string;
+  orderQuantity: string;
+  orderResult: OverseasOrderResponse | null;
+  orderSide: string;
+  orderSymbol: string;
+  quoteErrors: Record<string, string>;
+  quotes: Record<string, OverseasQuote>;
+  status: SystemStatus | null;
+  onOrderExchangeChange: (value: string) => void;
+  onOrderPriceChange: (value: string) => void;
+  onOrderQuantityChange: (value: string) => void;
+  onOrderSideChange: (value: string) => void;
+  onOrderSymbolChange: (value: string) => void;
+  onRefresh: () => void;
+  onSubmitOrder: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const selectedQuote = quotes[orderSymbol];
+  const notional = Number(orderQuantity || 0) * Number(orderPrice || 0);
+
+  return (
+    <section className="content-grid">
+      <div className="panel">
+        <div className="panel-header">
+          <h2>미국 주식 마켓</h2>
+          <button className="ghost-button" type="button" onClick={onRefresh}>
+            새로고침
+          </button>
+        </div>
+        <div className="crypto-market-list">
+          {instruments.map((instrument) => {
+            const quote = quotes[instrument.symbol];
+            const quoteError = quoteErrors[instrument.symbol];
+            return (
+              <button
+                className={orderSymbol === instrument.symbol ? "crypto-market-row active" : "crypto-market-row"}
+                key={`${instrument.exchange_code}-${instrument.symbol}`}
+                type="button"
+                onClick={() => {
+                  onOrderSymbolChange(instrument.symbol);
+                  onOrderExchangeChange(instrument.order_exchange_code);
+                  const last = getOverseasLastPrice(quote);
+                  if (last) {
+                    onOrderPriceChange(last);
+                  }
+                }}
+              >
+                <div>
+                  <strong>{instrument.name}</strong>
+                  <span>{instrument.symbol} · {instrument.market}</span>
+                </div>
+                <div>
+                  <strong>{formatUsdText(getOverseasLastPrice(quote))}</strong>
+                  <span>{quoteError ?? formatOverseasChange(quote)}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>KIS 해외주식</h2>
+          <span>미국 시장</span>
+        </div>
+        <dl className="summary-grid">
+          <div><dt>시세 API</dt><dd>{selectedQuote ? "연결됨" : "대기"}</dd></div>
+          <div><dt>API Key</dt><dd>{status?.kis.configured ? "설정됨" : "미설정"}</dd></div>
+          <div><dt>실전 주문</dt><dd>{status?.live_trading_enabled ? "허용 가능" : "차단"}</dd></div>
+          <div><dt>1회 한도</dt><dd>{formatUsd(status?.risk.max_overseas_order_amount_usd)}</dd></div>
+        </dl>
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>해외주식 모의 주문</h2>
+          <span>미국 주식 · 지정가 전용</span>
+        </div>
+        <form className="crypto-order-form" onSubmit={onSubmitOrder}>
+          <select aria-label="주문 방향" value={orderSide} onChange={(event) => onOrderSideChange(event.target.value)}>
+            <option value="buy">매수</option>
+            <option value="sell">매도</option>
+          </select>
+          <select
+            aria-label="해외주식 심볼"
+            value={`${orderExchange}:${orderSymbol}`}
+            onChange={(event) => {
+              const [exchange, symbol] = event.target.value.split(":");
+              onOrderExchangeChange(exchange);
+              onOrderSymbolChange(symbol);
+              const last = getOverseasLastPrice(quotes[symbol]);
+              if (last) {
+                onOrderPriceChange(last);
+              }
+            }}
+          >
+            {instruments.map((item) => (
+              <option key={`${item.order_exchange_code}-order-${item.symbol}`} value={`${item.order_exchange_code}:${item.symbol}`}>
+                {item.name} {item.symbol}
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label="주문 수량"
+            inputMode="numeric"
+            min="1"
+            placeholder="수량"
+            type="number"
+            value={orderQuantity}
+            onChange={(event) => onOrderQuantityChange(event.target.value)}
+          />
+          <input
+            aria-label="주문 가격"
+            inputMode="decimal"
+            min="0"
+            placeholder="USD 지정가"
+            step="any"
+            type="number"
+            value={orderPrice}
+            onChange={(event) => onOrderPriceChange(event.target.value)}
+          />
+          <button type="submit">기록</button>
+        </form>
+        <div className="order-meta">
+          <span>예상 주문금액</span>
+          <strong>{formatUsd(notional)}</strong>
+        </div>
+        {orderResult ? (
+          <div className={orderResult.accepted ? "notice success" : "notice"}>
+            {orderResult.message}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>해외주식 리스크 제한</h2>
+          <span>실거래 전 보호장치</span>
+        </div>
+        <ul className="risk-list compact">
+          <li><span>실전 주문</span><strong>OFF</strong></li>
+          <li><span>지원 시장</span><strong>NASDAQ · NYSE · AMEX</strong></li>
+          <li><span>1회 주문 한도</span><strong>{formatUsd(status?.risk.max_overseas_order_amount_usd)}</strong></li>
+          <li><span>통화</span><strong>USD</strong></li>
+        </ul>
+      </div>
+
+      <div className="panel wide">
+        <div className="panel-header">
+          <h2>해외주식 주문 로그</h2>
+          <span>최근 50건</span>
+        </div>
+        {orderLogs.length > 0 ? (
+          <div className="order-log-list">
+            {orderLogs.slice(0, 5).map((log, index) => (
+              <div className="order-log-row" key={index}>
+                <span>{formatOverseasOrderLog(log)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="log-line">아직 해외주식 주문 로그가 없습니다.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function formatKrw(value?: number) {
   if (value === undefined) {
     return "-";
@@ -1410,6 +1726,30 @@ function formatUsdtText(value?: string) {
   return formatUsdt(numberValue);
 }
 
+function formatUsd(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "-";
+  }
+  return new Intl.NumberFormat("ko-KR", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatUsdText(value?: string) {
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return "-";
+  }
+
+  return formatUsd(numberValue);
+}
+
 function formatPercent(value?: number) {
   if (value === undefined) {
     return "-";
@@ -1424,6 +1764,7 @@ function formatRiskForm(risk: RiskSettings) {
     max_position_ratio: String(Math.round(risk.max_position_ratio * 100)),
     daily_max_loss_ratio: String(Math.round(risk.daily_max_loss_ratio * 100)),
     daily_max_order_count: String(risk.daily_max_order_count),
+    max_overseas_order_amount_usd: String(risk.max_overseas_order_amount_usd),
     max_crypto_order_amount_usdt: String(risk.max_crypto_order_amount_usdt),
   };
 }
@@ -1434,6 +1775,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
   const maxPositionRatio = Number(form.max_position_ratio) / 100;
   const dailyMaxLossRatio = Number(form.daily_max_loss_ratio) / 100;
   const dailyMaxOrderCount = Number(form.daily_max_order_count);
+  const maxOverseasOrderAmountUsd = Number(form.max_overseas_order_amount_usd);
   const maxCryptoOrderAmountUsdt = Number(form.max_crypto_order_amount_usdt);
 
   if (
@@ -1442,12 +1784,14 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
     maxPositionRatio <= 0 ||
     dailyMaxLossRatio <= 0 ||
     dailyMaxOrderCount <= 0 ||
+    maxOverseasOrderAmountUsd <= 0 ||
     maxCryptoOrderAmountUsdt <= 0 ||
     !Number.isFinite(maxOrderAmountKrw) ||
     !Number.isFinite(maxDailyAutoOrderAmountKrwPerSymbol) ||
     !Number.isFinite(maxPositionRatio) ||
     !Number.isFinite(dailyMaxLossRatio) ||
     !Number.isFinite(dailyMaxOrderCount) ||
+    !Number.isFinite(maxOverseasOrderAmountUsd) ||
     !Number.isFinite(maxCryptoOrderAmountUsdt)
   ) {
     return null;
@@ -1459,6 +1803,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
     max_position_ratio: maxPositionRatio,
     daily_max_loss_ratio: dailyMaxLossRatio,
     daily_max_order_count: Math.round(dailyMaxOrderCount),
+    max_overseas_order_amount_usd: maxOverseasOrderAmountUsd,
     max_crypto_order_amount_usdt: maxCryptoOrderAmountUsdt,
   };
 }
@@ -1618,6 +1963,9 @@ function formatAction(action: string) {
 }
 
 function formatMarketEyebrow(tab: MarketTab) {
+  if (tab === "overseas-stocks") {
+    return "US Stocks";
+  }
   if (tab === "crypto-spot") {
     return "Crypto Spot";
   }
@@ -1628,6 +1976,9 @@ function formatMarketEyebrow(tab: MarketTab) {
 }
 
 function formatMarketTitle(tab: MarketTab) {
+  if (tab === "overseas-stocks") {
+    return "해외주식 관제판";
+  }
   if (tab === "crypto-spot") {
     return "코인 현물 관제판";
   }
@@ -1635,6 +1986,51 @@ function formatMarketTitle(tab: MarketTab) {
     return "코인 선물 관제판";
   }
   return "자동매매 관제판";
+}
+
+function getOverseasLastPrice(quote?: OverseasQuote) {
+  return pickOverseasField(quote, ["last", "last_price", "ovrs_now_pric", "stck_prpr", "base"]);
+}
+
+function formatOverseasChange(quote?: OverseasQuote) {
+  if (!quote?.output) {
+    return "시세 대기";
+  }
+
+  const change = pickOverseasField(quote, ["diff", "prdy_vrss", "ovrs_prdy_vrss"]);
+  const rate = pickOverseasField(quote, ["rate", "prdy_ctrt", "ovrs_prdy_ctrt"]);
+  if (!change && !rate) {
+    return `${quote.market} · ${quote.currency}`;
+  }
+
+  const changeNumber = Number(change ?? "0");
+  const prefix = changeNumber > 0 ? "+" : "";
+  return `전일 대비 ${change ? `${prefix}${formatUsdText(change)}` : "-"}${rate ? ` (${prefix}${rate}%)` : ""}`;
+}
+
+function pickOverseasField(quote: OverseasQuote | undefined, keys: string[]) {
+  if (!quote?.output) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = quote.output[key];
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function formatOverseasOrderLog(log: Record<string, unknown>) {
+  const response = log.response as OverseasOrderResponse | undefined;
+  if (!response) {
+    return "해외주식 주문 로그를 표시할 수 없습니다.";
+  }
+
+  const side = response.side === "buy" ? "매수" : "매도";
+  return `${response.status} · ${side} ${response.symbol} ${response.quantity}주 @ ${formatUsd(response.price)}`;
 }
 
 function formatCryptoChange(quote?: CryptoQuote) {
@@ -1676,6 +2072,27 @@ async function loadQuotes(items: WatchlistItem[]) {
       quotes[item.symbol] = await fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`);
     } catch (error) {
       quoteErrors[item.symbol] = error instanceof Error ? error.message : "현재가 조회 실패";
+    }
+  }
+
+  return { quotes, quoteErrors };
+}
+
+async function loadOverseasQuotes(items: OverseasInstrument[]) {
+  const quotes: Record<string, OverseasQuote> = {};
+  const quoteErrors: Record<string, string> = {};
+
+  for (const [index, item] of items.entries()) {
+    if (index > 0) {
+      await delay(450);
+    }
+
+    try {
+      quotes[item.symbol] = await fetchJsonWithRetry<OverseasQuote>(
+        `/api/overseas-stocks/quote/${item.exchange_code}/${item.symbol}`,
+      );
+    } catch (error) {
+      quoteErrors[item.symbol] = error instanceof Error ? error.message : "시세 조회 실패";
     }
   }
 

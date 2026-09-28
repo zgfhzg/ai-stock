@@ -647,6 +647,7 @@ fn ai_order_guard(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn result(
     rule: &TradingRule,
     action: &str,

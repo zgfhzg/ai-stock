@@ -15,6 +15,7 @@ pub struct RiskSettings {
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
     pub daily_max_order_count: u32,
+    pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
 }
 
@@ -25,6 +26,7 @@ pub struct RiskSettingsInput {
     pub max_position_ratio: f64,
     pub daily_max_loss_ratio: f64,
     pub daily_max_order_count: u32,
+    pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
 }
 
@@ -37,6 +39,7 @@ impl RiskSettings {
             max_position_ratio: config.max_position_ratio,
             daily_max_loss_ratio: config.daily_max_loss_ratio,
             daily_max_order_count: config.daily_max_order_count,
+            max_overseas_order_amount_usd: config.max_overseas_order_amount_usd,
             max_crypto_order_amount_usdt: config.max_crypto_order_amount_usdt,
         }
     }
@@ -56,6 +59,7 @@ pub fn save(state: &AppState, input: RiskSettingsInput) -> ApiResult<RiskSetting
         max_position_ratio: input.max_position_ratio,
         daily_max_loss_ratio: input.daily_max_loss_ratio,
         daily_max_order_count: input.daily_max_order_count,
+        max_overseas_order_amount_usd: input.max_overseas_order_amount_usd,
         max_crypto_order_amount_usdt: input.max_crypto_order_amount_usdt,
     };
 
@@ -96,6 +100,10 @@ fn read_settings(path: &str, config: &AppConfig) -> ApiResult<RiskSettings> {
             .and_then(serde_json::Value::as_u64)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(defaults.daily_max_order_count),
+        max_overseas_order_amount_usd: value
+            .get("max_overseas_order_amount_usd")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(defaults.max_overseas_order_amount_usd),
         max_crypto_order_amount_usdt: value
             .get("max_crypto_order_amount_usdt")
             .and_then(serde_json::Value::as_f64)
@@ -131,6 +139,14 @@ fn validate(input: &RiskSettingsInput) -> ApiResult<()> {
         return validation_error(
             "invalid_max_crypto_order_amount",
             "Crypto order limit must be positive.",
+        );
+    }
+    if input.max_overseas_order_amount_usd <= 0.0
+        || !input.max_overseas_order_amount_usd.is_finite()
+    {
+        return validation_error(
+            "invalid_max_overseas_order_amount",
+            "Overseas stock order limit must be positive.",
         );
     }
     if input.max_position_ratio <= 0.0

@@ -14,6 +14,9 @@ use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
     orders::{self, OrderRequest, OrderResponse},
+    overseas::{
+        self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
+    },
     risk_settings::{self, RiskSettings, RiskSettingsInput},
     rule_monitor::{
         self, RuleCheckLog, RuleCheckRequest, RuleCheckResponse, RuleMonitorStartRequest,
@@ -35,6 +38,18 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/account/balance", get(account_balance))
         .route("/api/market/price/:symbol", get(market_price))
         .route("/api/stocks/search", get(search_stocks))
+        .route(
+            "/api/overseas-stocks/instruments",
+            get(overseas_instruments),
+        )
+        .route(
+            "/api/overseas-stocks/quote/:exchange_code/:symbol",
+            get(overseas_quote),
+        )
+        .route(
+            "/api/overseas-stocks/orders",
+            get(overseas_order_logs).post(place_overseas_order),
+        )
         .route("/api/crypto/config", get(crypto_config))
         .route(
             "/api/crypto/instruments/:market_type",
@@ -149,6 +164,32 @@ async fn search_stocks(
     Query(query): Query<StockSearchQuery>,
 ) -> ApiResult<Json<Vec<Stock>>> {
     Ok(Json(stocks::search(&state, &query.q)?))
+}
+
+async fn overseas_instruments() -> Json<Vec<OverseasInstrument>> {
+    Json(overseas::instruments())
+}
+
+async fn overseas_quote(
+    State(state): State<AppState>,
+    Path((exchange_code, symbol)): Path<(String, String)>,
+) -> ApiResult<Json<OverseasQuote>> {
+    Ok(Json(
+        overseas::quote(&state, &exchange_code, &symbol).await?,
+    ))
+}
+
+async fn overseas_order_logs(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    Ok(Json(overseas::list_order_logs(&state)?))
+}
+
+async fn place_overseas_order(
+    State(state): State<AppState>,
+    Json(request): Json<OverseasOrderRequest>,
+) -> ApiResult<Json<OverseasOrderResponse>> {
+    Ok(Json(overseas::place_order(&state, request).await?))
 }
 
 async fn crypto_config(State(state): State<AppState>) -> Json<CryptoConfigStatus> {
