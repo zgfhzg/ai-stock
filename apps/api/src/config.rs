@@ -33,6 +33,7 @@ pub struct AppConfig {
     pub auto_rule_cooldown_seconds: u64,
     pub auto_rule_monitor_interval_seconds: u64,
     pub auto_decision_log_path: String,
+    pub auto_monitor_settings_path: String,
     pub auto_min_confidence: f64,
     pub risk_settings_path: String,
     pub max_overseas_order_amount_usd: f64,
@@ -107,6 +108,10 @@ impl AppConfig {
             auto_decision_log_path: read_env(
                 "AUTO_DECISION_LOG_PATH",
                 "../../data/auto-decisions.jsonl",
+            ),
+            auto_monitor_settings_path: read_env(
+                "AUTO_MONITOR_SETTINGS_PATH",
+                "../../data/auto-monitor-settings.json",
             ),
             auto_min_confidence: read_env("AUTO_MIN_CONFIDENCE", "0.7")
                 .parse()

@@ -18,6 +18,9 @@ class ProposalRequest(BaseModel):
     current_price: int | None = None
     previous_change: int | None = None
     previous_change_rate: float | None = None
+    holding_quantity: int | None = None
+    average_purchase_price: int | None = None
+    evaluation_profit_rate: float | None = None
 
 
 class ProposalResponse(BaseModel):
@@ -37,12 +40,34 @@ def create_proposal(request: ProposalRequest) -> ProposalResponse:
     trading_mode = os.getenv("TRADING_MODE", "paper")
     label = request.name or request.symbol
     rate = request.previous_change_rate
+    holding_quantity = request.holding_quantity or 0
+    profit_rate = request.evaluation_profit_rate
 
     if rate is None or request.current_price is None:
         return ProposalResponse(
             action="hold",
             confidence=0.2,
             reason=f"{label}: 현재가 데이터가 부족해서 관망합니다.",
+        )
+
+    if holding_quantity > 0 and profit_rate is not None and profit_rate <= -3.0:
+        return ProposalResponse(
+            action="sell",
+            confidence=0.82,
+            reason=(
+                f"{label}: 보유 수익률이 {profit_rate:.2f}%로 손실 제한 구간입니다. "
+                "보유 수량 정리를 제안합니다."
+            ),
+        )
+
+    if holding_quantity > 0 and profit_rate is not None and profit_rate >= 5.0:
+        return ProposalResponse(
+            action="sell",
+            confidence=0.78,
+            reason=(
+                f"{label}: 보유 수익률이 +{profit_rate:.2f}%로 수익 실현 구간입니다. "
+                "보유 수량 매도를 제안합니다."
+            ),
         )
 
     if rate <= -4.0:
@@ -55,7 +80,7 @@ def create_proposal(request: ProposalRequest) -> ProposalResponse:
             ),
         )
 
-    if rate >= 5.0:
+    if holding_quantity > 0 and rate >= 5.0:
         return ProposalResponse(
             action="sell",
             confidence=0.68,

@@ -16,6 +16,7 @@ import "./styles.css";
 type SystemStatus = {
   api: string;
   trading_mode: string;
+  auto_trade_mode: string;
   live_trading_enabled: boolean;
   kis: {
     configured: boolean;
@@ -35,6 +36,7 @@ type SystemStatus = {
     service: string;
   };
   risk: {
+    auto_trading_budget_krw: number;
     max_order_amount_krw: number;
     max_daily_auto_order_amount_krw_per_symbol: number;
     max_position_ratio: number;
@@ -105,6 +107,8 @@ type AutoDecision = {
   previous_change?: number | null;
   previous_change_rate?: string | null;
   order_submitted: boolean;
+  quantity: number;
+  order_amount_krw: number;
   skip_reason?: string | null;
 };
 
@@ -125,6 +129,18 @@ type AutoRunResponse = {
 type AutoRunLog = {
   timestamp_unix: number;
   response: AutoRunResponse;
+};
+
+type AutoMonitorStatus = {
+  running: boolean;
+  interval_seconds: number;
+  last_started_at_unix?: number | null;
+  last_stopped_at_unix?: number | null;
+  last_check_at_unix?: number | null;
+  next_check_at_unix?: number | null;
+  last_error?: string | null;
+  consecutive_error_count: number;
+  last_response?: AutoRunResponse | null;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -280,6 +296,9 @@ function App() {
   const [autoRun, setAutoRun] = React.useState<AutoRunResponse | null>(null);
   const [autoRunLogs, setAutoRunLogs] = React.useState<AutoRunLog[]>([]);
   const [autoRunning, setAutoRunning] = React.useState(false);
+  const [autoMonitor, setAutoMonitor] = React.useState<AutoMonitorStatus | null>(null);
+  const [autoMonitorIntervalSeconds, setAutoMonitorIntervalSeconds] = React.useState(30);
+  const [autoMonitorBusy, setAutoMonitorBusy] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -294,6 +313,7 @@ function App() {
   const [ruleMonitorBusy, setRuleMonitorBusy] = React.useState(false);
   const ruleCheckInFlight = React.useRef(false);
   const [riskForm, setRiskForm] = React.useState({
+    auto_trading_budget_krw: "500000",
     max_order_amount_krw: "100000",
     max_daily_auto_order_amount_krw_per_symbol: "100000",
     max_position_ratio: "20",
@@ -337,7 +357,7 @@ function App() {
         return response.json();
       })
       .then(setStatus)
-      .then(() => Promise.all([loadAutoRunLogs(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs()]))
+      .then(() => Promise.all([loadAutoRunLogs(), loadAutoMonitorStatus(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs()]))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
 
@@ -375,6 +395,7 @@ function App() {
     const timer = window.setInterval(() => {
       loadRuleMonitorStatus();
       loadRuleCheckLogs();
+      loadAutoMonitorStatus();
     }, 5000);
 
     return () => window.clearInterval(timer);
@@ -514,6 +535,40 @@ function App() {
     return fetchJson<AutoRunLog[]>("/api/auto-trading/runs")
       .then(setAutoRunLogs)
       .catch(() => setAutoRunLogs([]));
+  }
+
+  function loadAutoMonitorStatus() {
+    return fetchJson<AutoMonitorStatus>("/api/auto-trading/monitor")
+      .then((monitor) => {
+        setAutoMonitor(monitor);
+        setAutoMonitorIntervalSeconds(monitor.interval_seconds);
+        if (monitor.last_response) {
+          setAutoRun(monitor.last_response);
+        }
+      })
+      .catch(() => setAutoMonitor(null));
+  }
+
+  function handleStartAutoMonitor() {
+    setError(null);
+    setAutoMonitorBusy(true);
+    fetchJson<AutoMonitorStatus>("/api/auto-trading/monitor/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ interval_seconds: autoMonitorIntervalSeconds }),
+    })
+      .then(setAutoMonitor)
+      .then(loadAutoRunLogs)
+      .catch(() => setError("AI 자동매매를 시작하지 못했습니다. 관심종목과 모의 자동주문 설정을 확인하세요."))
+      .finally(() => setAutoMonitorBusy(false));
+  }
+
+  function handleStopAutoMonitor() {
+    setAutoMonitorBusy(true);
+    fetchJson<AutoMonitorStatus>("/api/auto-trading/monitor/stop", { method: "POST" })
+      .then(setAutoMonitor)
+      .catch(() => setError("AI 자동매매를 중지하지 못했습니다."))
+      .finally(() => setAutoMonitorBusy(false));
   }
 
   function loadTradingRules() {
@@ -1012,6 +1067,16 @@ function App() {
             </div>
             <form className="risk-form" onSubmit={handleSaveRiskSettings}>
               <label>
+                <span>AI 총 운용예산</span>
+                <input
+                  inputMode="numeric"
+                  min="1"
+                  type="number"
+                  value={riskForm.auto_trading_budget_krw}
+                  onChange={(event) => handleRiskFormChange("auto_trading_budget_krw", event.target.value)}
+                />
+              </label>
+              <label>
                 <span>1회 주문 한도</span>
                 <input
                   inputMode="numeric"
@@ -1236,17 +1301,37 @@ function App() {
 
           <div className="panel wide">
             <div className="panel-header">
-              <h2>자동매매 실행</h2>
-              <span>{autoRun ? `${autoRun.summary.total}개 판단` : formatLastAutoRun(autoRunLogs)}</span>
+              <h2>AI 자율 자동매매</h2>
+              <span>{autoMonitor?.running ? "감시 중" : "중지됨"}</span>
             </div>
             <div className="auto-trade-toolbar">
-              <button type="button" onClick={handleRunAutoTrading} disabled={autoRunning}>
-                <PlayCircle size={18} />
-                <span>{autoRunning ? "판단 중" : "실행 1회"}</span>
-              </button>
+              <div className="auto-monitor-controls">
+                <button type="button" className="ghost-button" onClick={handleRunAutoTrading} disabled={autoRunning || autoMonitor?.running}>
+                  <PlayCircle size={18} />
+                  <span>{autoRunning ? "판단 중" : "판단 1회"}</span>
+                </button>
+                <select
+                  aria-label="AI 감시 주기"
+                  disabled={autoMonitor?.running}
+                  value={autoMonitorIntervalSeconds}
+                  onChange={(event) => setAutoMonitorIntervalSeconds(Number(event.target.value))}
+                >
+                  <option value={30}>30초</option>
+                  <option value={60}>1분</option>
+                  <option value={300}>5분</option>
+                  <option value={900}>15분</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={autoMonitor?.running ? handleStopAutoMonitor : handleStartAutoMonitor}
+                  disabled={autoMonitorBusy}
+                >
+                  <span>{autoMonitorBusy ? "처리 중" : autoMonitor?.running ? "자동매매 중지" : "자동매매 시작"}</span>
+                </button>
+              </div>
               <div>
-                <strong>{autoRun ? formatAutoSummary(autoRun) : "아직 실행 전"}</strong>
-                <span>기본 모드는 추천만 기록하고 주문은 넣지 않습니다.</span>
+                <strong>{formatAutoMonitorTitle(autoMonitor, autoRun, autoRunLogs)}</strong>
+                <span>{formatAutoMonitorDetail(autoMonitor, status, riskForm.auto_trading_budget_krw)}</span>
               </div>
             </div>
             {autoRun ? (
@@ -1258,8 +1343,8 @@ function App() {
                       <span>{decision.symbol} · {formatKrw(decision.current_price ?? undefined)}</span>
                     </div>
                     <div>
-                      <strong>{formatAction(decision.action)} · {Math.round(decision.confidence * 100)}%</strong>
-                      <span>{decision.reason}</span>
+                      <strong>{formatAction(decision.action)} · {Math.round(decision.confidence * 100)}% · {decision.quantity}주</strong>
+                      <span>{decision.reason}{decision.order_amount_krw > 0 ? ` · ${formatKrw(decision.order_amount_krw)}` : ""}</span>
                     </div>
                   </article>
                 ))}
@@ -1853,6 +1938,7 @@ function formatPercent(value?: number) {
 
 function formatRiskForm(risk: RiskSettings) {
   return {
+    auto_trading_budget_krw: String(risk.auto_trading_budget_krw),
     max_order_amount_krw: String(risk.max_order_amount_krw),
     max_daily_auto_order_amount_krw_per_symbol: String(risk.max_daily_auto_order_amount_krw_per_symbol),
     max_position_ratio: String(Math.round(risk.max_position_ratio * 100)),
@@ -1864,6 +1950,7 @@ function formatRiskForm(risk: RiskSettings) {
 }
 
 function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | null {
+  const autoTradingBudgetKrw = Number(form.auto_trading_budget_krw);
   const maxOrderAmountKrw = Number(form.max_order_amount_krw);
   const maxDailyAutoOrderAmountKrwPerSymbol = Number(form.max_daily_auto_order_amount_krw_per_symbol);
   const maxPositionRatio = Number(form.max_position_ratio) / 100;
@@ -1873,6 +1960,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
   const maxCryptoOrderAmountUsdt = Number(form.max_crypto_order_amount_usdt);
 
   if (
+    autoTradingBudgetKrw <= 0 ||
     maxOrderAmountKrw <= 0 ||
     maxDailyAutoOrderAmountKrwPerSymbol <= 0 ||
     maxPositionRatio <= 0 ||
@@ -1880,6 +1968,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
     dailyMaxOrderCount <= 0 ||
     maxOverseasOrderAmountUsd <= 0 ||
     maxCryptoOrderAmountUsdt <= 0 ||
+    !Number.isFinite(autoTradingBudgetKrw) ||
     !Number.isFinite(maxOrderAmountKrw) ||
     !Number.isFinite(maxDailyAutoOrderAmountKrwPerSymbol) ||
     !Number.isFinite(maxPositionRatio) ||
@@ -1892,6 +1981,7 @@ function parseRiskForm(form: ReturnType<typeof formatRiskForm>): RiskSettings | 
   }
 
   return {
+    auto_trading_budget_krw: Math.round(autoTradingBudgetKrw),
     max_order_amount_krw: Math.round(maxOrderAmountKrw),
     max_daily_auto_order_amount_krw_per_symbol: Math.round(maxDailyAutoOrderAmountKrwPerSymbol),
     max_position_ratio: maxPositionRatio,
@@ -1925,6 +2015,30 @@ function formatOrderLog(log: Record<string, unknown>) {
 
 function formatAutoSummary(run: AutoRunResponse) {
   return `관망 ${run.summary.hold} · 매수 ${run.summary.buy} · 매도 ${run.summary.sell} · 주문 ${run.summary.orders}`;
+}
+
+function formatAutoMonitorTitle(
+  monitor: AutoMonitorStatus | null,
+  run: AutoRunResponse | null,
+  logs: AutoRunLog[],
+) {
+  if (monitor?.running) {
+    return run ? formatAutoSummary(run) : "첫 AI 판단을 준비하고 있습니다.";
+  }
+  return run ? formatAutoSummary(run) : formatLastAutoRun(logs);
+}
+
+function formatAutoMonitorDetail(
+  monitor: AutoMonitorStatus | null,
+  status: SystemStatus | null,
+  budget: string,
+) {
+  if (monitor?.last_error) {
+    return `최근 오류: ${monitor.last_error}`;
+  }
+  const mode = status?.auto_trade_mode === "paper_auto" ? "모의 자동주문" : "추천 전용";
+  const interval = monitor?.interval_seconds ?? 30;
+  return `${mode} · 총 운용예산 ${formatKrw(Number(budget || 0))} · ${interval}초마다 관심종목 판단`;
 }
 
 function formatLastAutoRun(logs: AutoRunLog[]) {

@@ -616,6 +616,9 @@ async fn rule_ai_proposal(
             current_price: Some(current_price),
             previous_change,
             previous_change_rate,
+            holding_quantity: None,
+            average_purchase_price: None,
+            evaluation_profit_rate: None,
         },
     )
     .await

@@ -41,6 +41,9 @@ async fn main() -> anyhow::Result<()> {
     if let Err((_, Json(error))) = rule_monitor::restore_monitor(&state).await {
         tracing::warn!("rule monitor restore failed: {}", error.message);
     }
+    if let Err((_, Json(error))) = auto_trading::restore_monitor(&state).await {
+        tracing::warn!("AI monitor restore failed: {}", error.message);
+    }
 
     let app = Router::new()
         .merge(app_router())

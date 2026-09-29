@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct RiskSettings {
+    pub auto_trading_budget_krw: u64,
     pub max_order_amount_krw: u64,
     pub max_daily_auto_order_amount_krw_per_symbol: u64,
     pub max_position_ratio: f64,
@@ -21,6 +22,7 @@ pub struct RiskSettings {
 
 #[derive(Deserialize)]
 pub struct RiskSettingsInput {
+    pub auto_trading_budget_krw: u64,
     pub max_order_amount_krw: u64,
     pub max_daily_auto_order_amount_krw_per_symbol: u64,
     pub max_position_ratio: f64,
@@ -33,6 +35,7 @@ pub struct RiskSettingsInput {
 impl RiskSettings {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
+            auto_trading_budget_krw: config.max_order_amount_krw.saturating_mul(5),
             max_order_amount_krw: config.max_order_amount_krw,
             max_daily_auto_order_amount_krw_per_symbol: config
                 .max_daily_auto_order_amount_krw_per_symbol,
@@ -53,6 +56,7 @@ pub fn save(state: &AppState, input: RiskSettingsInput) -> ApiResult<RiskSetting
     validate(&input)?;
 
     let settings = RiskSettings {
+        auto_trading_budget_krw: input.auto_trading_budget_krw,
         max_order_amount_krw: input.max_order_amount_krw,
         max_daily_auto_order_amount_krw_per_symbol: input
             .max_daily_auto_order_amount_krw_per_symbol,
@@ -79,6 +83,10 @@ fn read_settings(path: &str, config: &AppConfig) -> ApiResult<RiskSettings> {
     let defaults = RiskSettings::from_config(config);
 
     Ok(RiskSettings {
+        auto_trading_budget_krw: value
+            .get("auto_trading_budget_krw")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(defaults.auto_trading_budget_krw),
         max_order_amount_krw: value
             .get("max_order_amount_krw")
             .and_then(serde_json::Value::as_u64)
@@ -122,6 +130,12 @@ fn write_settings(path: &str, settings: &RiskSettings) -> ApiResult<()> {
 }
 
 fn validate(input: &RiskSettingsInput) -> ApiResult<()> {
+    if input.auto_trading_budget_krw == 0 {
+        return validation_error(
+            "invalid_auto_trading_budget",
+            "AI trading budget must be positive.",
+        );
+    }
     if input.max_order_amount_krw == 0 {
         return validation_error(
             "invalid_max_order_amount",

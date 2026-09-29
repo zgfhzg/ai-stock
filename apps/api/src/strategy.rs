@@ -15,6 +15,9 @@ pub struct ProposalRequest {
     pub current_price: Option<u64>,
     pub previous_change: Option<i64>,
     pub previous_change_rate: Option<f64>,
+    pub holding_quantity: Option<u32>,
+    pub average_purchase_price: Option<u64>,
+    pub evaluation_profit_rate: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize)]

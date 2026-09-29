@@ -921,7 +921,7 @@ h2 {
 
 .auto-trade-toolbar {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: minmax(360px, auto) minmax(0, 1fr);
   gap: 14px;
   align-items: center;
   margin-bottom: 14px;
@@ -940,6 +940,29 @@ h2 {
   font-weight: 800;
 }
 
+.auto-monitor-controls {
+  display: grid;
+  grid-template-columns: auto 100px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.auto-monitor-controls select {
+  height: 40px;
+  min-width: 0;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #17211a;
+}
+
+.auto-monitor-controls .ghost-button {
+  background: #f8f7f2;
+  color: #2f6f4f;
+  border-color: #d7d4ca;
+}
+
 .auto-trade-toolbar div,
 .auto-decision-row div {
   display: grid;
@@ -951,6 +974,10 @@ h2 {
 .auto-decision-row span {
   color: #657066;
   font-size: 13px;
+}
+
+.auto-trade-toolbar button span {
+  color: inherit;
 }
 
 .auto-decision-list {
@@ -1068,6 +1095,7 @@ h2 {
   .risk-form,
   .watchlist-form,
   .auto-trade-toolbar,
+  .auto-monitor-controls,
   .rule-check-toolbar,
   .rule-monitor-toolbar,
   .auto-decision-row,

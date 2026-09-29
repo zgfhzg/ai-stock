@@ -2,6 +2,7 @@ use reqwest::Client;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::auto_trading::AutoMonitorRuntime;
 use crate::config::AppConfig;
 use crate::rule_monitor::RuleMonitorRuntime;
 
@@ -11,6 +12,7 @@ pub struct AppState {
     pub http: Client,
     pub kis_token: Arc<RwLock<Option<CachedToken>>>,
     pub rule_monitor: Arc<Mutex<RuleMonitorRuntime>>,
+    pub auto_monitor: Arc<Mutex<AutoMonitorRuntime>>,
 }
 
 #[derive(Clone)]
@@ -28,6 +30,9 @@ impl AppState {
             http: Client::new(),
             kis_token: Arc::new(RwLock::new(None)),
             rule_monitor: Arc::new(Mutex::new(RuleMonitorRuntime::new(
+                monitor_interval_seconds,
+            ))),
+            auto_monitor: Arc::new(Mutex::new(AutoMonitorRuntime::new(
                 monitor_interval_seconds,
             ))),
         }

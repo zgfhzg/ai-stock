@@ -6,7 +6,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auto_trading::{self, AutoRunRequest, AutoRunResponse},
+    auto_trading::{
+        self, AutoMonitorStartRequest, AutoMonitorStatus, AutoRunRequest, AutoRunResponse,
+    },
     crypto::{
         self, CryptoConfigStatus, CryptoInstrument, CryptoOrderRequest, CryptoOrderResponse,
         CryptoQuote,
@@ -69,6 +71,9 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/auto-trading/run", post(run_auto_trading))
         .route("/api/auto-trading/runs", get(auto_trading_logs))
+        .route("/api/auto-trading/monitor", get(auto_monitor_status))
+        .route("/api/auto-trading/monitor/start", post(start_auto_monitor))
+        .route("/api/auto-trading/monitor/stop", post(stop_auto_monitor))
         .route(
             "/api/auto-trading/rules",
             get(trading_rule_list).post(add_trading_rule),
@@ -101,6 +106,7 @@ struct HealthResponse {
 struct SystemStatus {
     api: &'static str,
     trading_mode: String,
+    auto_trade_mode: String,
     live_trading_enabled: bool,
     kis: KisConfigStatus,
     crypto: CryptoConfigStatus,
@@ -129,6 +135,7 @@ async fn status(State(state): State<AppState>) -> Json<SystemStatus> {
     Json(SystemStatus {
         api: "ok",
         trading_mode: state.config.trading_mode.clone(),
+        auto_trade_mode: state.config.auto_trade_mode.clone(),
         live_trading_enabled: state.config.live_trading_enabled,
         kis: kis::config_status(&state.config),
         crypto: crypto::config_status(&state),
@@ -273,6 +280,21 @@ async fn auto_trading_logs(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
     Ok(Json(auto_trading::list_logs(&state)?))
+}
+
+async fn auto_monitor_status(State(state): State<AppState>) -> Json<AutoMonitorStatus> {
+    Json(auto_trading::monitor_status(&state).await)
+}
+
+async fn start_auto_monitor(
+    State(state): State<AppState>,
+    Json(request): Json<AutoMonitorStartRequest>,
+) -> ApiResult<Json<AutoMonitorStatus>> {
+    Ok(Json(auto_trading::start_monitor(&state, request).await?))
+}
+
+async fn stop_auto_monitor(State(state): State<AppState>) -> Json<AutoMonitorStatus> {
+    Json(auto_trading::stop_monitor(&state).await)
 }
 
 async fn trading_rule_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TradingRule>>> {
