@@ -947,6 +947,82 @@ h2 {
   align-items: center;
 }
 
+.panel-title-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.news-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.news-toolbar > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.news-toolbar span,
+.news-row span {
+  color: #657066;
+  font-size: 13px;
+}
+
+.news-toolbar button {
+  min-width: 112px;
+  height: 40px;
+  border: 1px solid #d7d4ca;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: #f8f7f2;
+  color: #2f6f4f;
+  font-weight: 800;
+}
+
+.news-list {
+  display: grid;
+  gap: 8px;
+}
+
+.news-row {
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.2fr);
+  gap: 18px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+  color: #17211a;
+  text-decoration: none;
+}
+
+.news-row:hover {
+  border-color: #97aa9b;
+  background: #f8faf7;
+}
+
+.news-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.news-row strong,
+.news-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auto-monitor-controls select {
   height: 40px;
   min-width: 0;
@@ -1100,6 +1176,7 @@ h2 {
   .rule-monitor-toolbar,
   .auto-decision-row,
   .auto-run-log-row,
+  .news-row,
   .order-form,
   .rule-form,
   .rule-row,
@@ -1110,6 +1187,15 @@ h2 {
   .crypto-market-row,
   .quote-row {
     grid-template-columns: 1fr;
+  }
+
+  .news-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .news-toolbar button {
+    width: 100%;
   }
 
   .watchlist-form button,

@@ -4,6 +4,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::auto_trading::AutoMonitorRuntime;
 use crate::config::AppConfig;
+use crate::news::NewsCollectorRuntime;
 use crate::rule_monitor::RuleMonitorRuntime;
 
 #[derive(Clone)]
@@ -13,6 +14,7 @@ pub struct AppState {
     pub kis_token: Arc<RwLock<Option<CachedToken>>>,
     pub rule_monitor: Arc<Mutex<RuleMonitorRuntime>>,
     pub auto_monitor: Arc<Mutex<AutoMonitorRuntime>>,
+    pub news_collector: Arc<Mutex<NewsCollectorRuntime>>,
 }
 
 #[derive(Clone)]
@@ -35,6 +37,7 @@ impl AppState {
             auto_monitor: Arc::new(Mutex::new(AutoMonitorRuntime::new(
                 monitor_interval_seconds,
             ))),
+            news_collector: Arc::new(Mutex::new(NewsCollectorRuntime::default())),
         }
     }
 }

@@ -63,6 +63,9 @@ make up
 - `GET /api/watchlist`: 관심종목 목록 조회
 - `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "query": "삼성전자" }`
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
+- `GET /api/news`: 최근 수집 뉴스 조회
+- `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
+- `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/orders`: 국내주식 현금 지정가 주문
 - `GET /api/orders`: 최근 주문 로그 조회
 - `POST /api/auto-trading/run`: 관심종목 기준 자동매매 판단 1회 실행
@@ -77,6 +80,8 @@ make up
 - `DELETE /api/auto-trading/rules/{id}`: 조건 기반 자동매매 규칙 삭제
 
 초기 전략 엔진은 현재가와 전일 대비 등락률을 받아 단순 규칙으로 판단합니다. 기본값은 추천 전용이며, 전일 대비 큰 하락은 매수 후보, 큰 상승은 매도 후보, 그 외는 관망으로 기록합니다.
+
+뉴스 수집기는 기본 24시간 간격으로 실행되며 원문과 이미지는 저장하지 않습니다. 제목, 링크, 출처, 발행시각과 최대 500자의 피드 요약만 SQLite에 저장합니다. URL 기준 중복 제거, 하루 300건 제한, 90일 보관, DB 최대 1GB가 기본값이며 `.env`의 `NEWS_COLLECTION_INTERVAL_HOURS`, `NEWS_DAILY_LIMIT`, `NEWS_RETENTION_DAYS`, `NEWS_MAX_DATABASE_BYTES`로 조정할 수 있습니다.
 
 조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 감시는 백엔드 API 서버에서 실행되므로 브라우저를 닫아도 API 서버가 살아 있으면 선택한 주기마다 규칙을 반복 점검합니다. 감시 설정은 파일로 저장되어 API 서버가 재시작돼도 이전에 켜져 있던 감시를 자동 복구합니다. `모의 주문` 토글은 기본 OFF이며, 켜더라도 `AUTO_TRADE_MODE=paper_auto`일 때만 조건 충족 시 모의 주문을 시도합니다. 자동주문 실행 시에는 AI 판단 방향이 규칙 주문 방향과 같고 신뢰도가 `AUTO_MIN_CONFIDENCE` 이상이어야 합니다.
 같은 규칙이 반복 발동하는 것을 막기 위해 기본 10분 쿨다운을 적용하며, `AUTO_RULE_COOLDOWN_SECONDS`로 조정할 수 있습니다. 자동주문은 규칙별 하루 1회로 제한하고, 종목별 일일 자동주문 금액은 `MAX_DAILY_AUTO_ORDER_AMOUNT_KRW_PER_SYMBOL`로 제한합니다.

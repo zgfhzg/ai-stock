@@ -36,6 +36,12 @@ pub struct AppConfig {
     pub auto_monitor_settings_path: String,
     pub auto_min_confidence: f64,
     pub risk_settings_path: String,
+    pub news_db_path: String,
+    pub news_feed_urls: Vec<String>,
+    pub news_collection_interval_hours: u64,
+    pub news_retention_days: u64,
+    pub news_daily_limit: u32,
+    pub news_max_database_bytes: u64,
     pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
@@ -117,6 +123,28 @@ impl AppConfig {
                 .parse()
                 .unwrap_or(0.7),
             risk_settings_path: read_env("RISK_SETTINGS_PATH", "../../data/risk-settings.json"),
+            news_db_path: read_env("NEWS_DB_PATH", "../../data/sqlite/news.db"),
+            news_feed_urls: read_env(
+                "NEWS_FEED_URLS",
+                "https://news.google.com/rss/search?q=%ED%95%9C%EA%B5%AD+%EC%A6%9D%EC%8B%9C+OR+%EC%BD%94%EC%8A%A4%ED%94%BC&hl=ko&gl=KR&ceid=KR:ko",
+            )
+            .split('|')
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+            news_collection_interval_hours: read_env("NEWS_COLLECTION_INTERVAL_HOURS", "24")
+                .parse()
+                .unwrap_or(24),
+            news_retention_days: read_env("NEWS_RETENTION_DAYS", "90")
+                .parse()
+                .unwrap_or(90),
+            news_daily_limit: read_env("NEWS_DAILY_LIMIT", "300")
+                .parse()
+                .unwrap_or(300),
+            news_max_database_bytes: read_env("NEWS_MAX_DATABASE_BYTES", "1073741824")
+                .parse()
+                .unwrap_or(1_073_741_824),
             max_overseas_order_amount_usd: read_env("MAX_OVERSEAS_ORDER_AMOUNT_USD", "100")
                 .parse()
                 .unwrap_or(100.0),

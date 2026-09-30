@@ -15,6 +15,7 @@ use crate::{
     },
     error::ApiResult,
     kis::{self, KisConfigStatus},
+    news::{self, NewsArticle, NewsCollectorStatus},
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -68,6 +69,9 @@ pub fn app_router() -> Router<AppState> {
         )
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
+        .route("/api/news", get(news_list))
+        .route("/api/news/status", get(news_status))
+        .route("/api/news/collect", post(collect_news))
         .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/auto-trading/run", post(run_auto_trading))
         .route("/api/auto-trading/runs", get(auto_trading_logs))
@@ -117,6 +121,11 @@ struct SystemStatus {
 #[derive(Deserialize)]
 struct StockSearchQuery {
     q: String,
+}
+
+#[derive(Deserialize)]
+struct NewsListQuery {
+    limit: Option<usize>,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -256,6 +265,21 @@ async fn remove_watchlist_item(
     Path(symbol): Path<String>,
 ) -> ApiResult<Json<Vec<WatchlistItem>>> {
     Ok(Json(watchlist::remove(&state, &symbol)?))
+}
+
+async fn news_list(
+    State(state): State<AppState>,
+    Query(query): Query<NewsListQuery>,
+) -> ApiResult<Json<Vec<NewsArticle>>> {
+    Ok(Json(news::list(&state, query.limit.unwrap_or(30))?))
+}
+
+async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {
+    Ok(Json(news::status(&state).await?))
+}
+
+async fn collect_news(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {
+    Ok(Json(news::collect_once(&state).await?))
 }
 
 async fn order_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {

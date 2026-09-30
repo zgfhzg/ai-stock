@@ -5,8 +5,10 @@ import {
   Bot,
   CircleDollarSign,
   Coins,
+  Newspaper,
   PlayCircle,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   Wifi,
@@ -141,6 +143,32 @@ type AutoMonitorStatus = {
   last_error?: string | null;
   consecutive_error_count: number;
   last_response?: AutoRunResponse | null;
+};
+
+type NewsArticle = {
+  id: number;
+  title: string;
+  url: string;
+  source: string;
+  published_at_unix: number;
+  collected_at_unix: number;
+  summary?: string | null;
+};
+
+type NewsCollectorStatus = {
+  running: boolean;
+  collecting: boolean;
+  interval_hours: number;
+  retention_days: number;
+  daily_limit: number;
+  article_count: number;
+  database_bytes: number;
+  max_database_bytes: number;
+  last_started_at_unix?: number | null;
+  last_finished_at_unix?: number | null;
+  next_collection_at_unix?: number | null;
+  last_inserted_count: number;
+  last_error?: string | null;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -299,6 +327,9 @@ function App() {
   const [autoMonitor, setAutoMonitor] = React.useState<AutoMonitorStatus | null>(null);
   const [autoMonitorIntervalSeconds, setAutoMonitorIntervalSeconds] = React.useState(30);
   const [autoMonitorBusy, setAutoMonitorBusy] = React.useState(false);
+  const [news, setNews] = React.useState<NewsArticle[]>([]);
+  const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
+  const [newsCollecting, setNewsCollecting] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -357,7 +388,7 @@ function App() {
         return response.json();
       })
       .then(setStatus)
-      .then(() => Promise.all([loadAutoRunLogs(), loadAutoMonitorStatus(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs()]))
+      .then(() => Promise.all([loadAutoRunLogs(), loadAutoMonitorStatus(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs(), loadNews()]))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
 
@@ -547,6 +578,31 @@ function App() {
         }
       })
       .catch(() => setAutoMonitor(null));
+  }
+
+  function loadNews() {
+    return Promise.all([
+      fetchJson<NewsArticle[]>("/api/news?limit=20"),
+      fetchJson<NewsCollectorStatus>("/api/news/status"),
+    ])
+      .then(([articles, collector]) => {
+        setNews(articles);
+        setNewsStatus(collector);
+      })
+      .catch(() => {
+        setNews([]);
+        setNewsStatus(null);
+      });
+  }
+
+  function handleCollectNews() {
+    setNewsCollecting(true);
+    setError(null);
+    fetchJson<NewsCollectorStatus>("/api/news/collect", { method: "POST" })
+      .then(setNewsStatus)
+      .then(loadNews)
+      .catch((error) => setError(error instanceof Error ? error.message : "뉴스를 수집하지 못했습니다."))
+      .finally(() => setNewsCollecting(false));
   }
 
   function handleStartAutoMonitor() {
@@ -944,6 +1000,41 @@ function App() {
                 );
               })}
             </div>
+          </div>
+
+          <div className="panel wide news-panel">
+            <div className="panel-header">
+              <div className="panel-title-with-icon">
+                <Newspaper size={19} />
+                <h2>시장 뉴스</h2>
+              </div>
+              <span>{formatNewsStorage(newsStatus)}</span>
+            </div>
+            <div className="news-toolbar">
+              <div>
+                <strong>{formatNewsCollectorTitle(newsStatus)}</strong>
+                <span>{formatNewsCollectorDetail(newsStatus)}</span>
+              </div>
+              <button type="button" onClick={handleCollectNews} disabled={newsCollecting || newsStatus?.collecting}>
+                <RefreshCw size={17} />
+                <span>{newsCollecting || newsStatus?.collecting ? "수집 중" : "지금 수집"}</span>
+              </button>
+            </div>
+            {news.length > 0 ? (
+              <div className="news-list">
+                {news.slice(0, 10).map((article) => (
+                  <a className="news-row" href={article.url} key={article.id} rel="noreferrer" target="_blank">
+                    <div>
+                      <strong>{article.title}</strong>
+                      <span>{article.source} · {formatRunTime(article.published_at_unix)}</span>
+                    </div>
+                    <span>{article.summary || "요약은 AI 분석 단계에서 생성됩니다."}</span>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="log-line">첫 수집이 완료되면 최근 시장 뉴스가 표시됩니다.</div>
+            )}
           </div>
 
           <div className="panel wide">
@@ -2046,6 +2137,29 @@ function formatLastAutoRun(logs: AutoRunLog[]) {
     return "추천 전용";
   }
   return `최근 실행 ${formatRunTime(logs[0].timestamp_unix)}`;
+}
+
+function formatNewsStorage(status: NewsCollectorStatus | null) {
+  if (!status) return "저장소 확인 중";
+  const megabytes = status.database_bytes / 1024 / 1024;
+  const maxMegabytes = status.max_database_bytes / 1024 / 1024;
+  return `${status.article_count.toLocaleString("ko-KR")}건 · ${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} / ${maxMegabytes.toFixed(0)}MB`;
+}
+
+function formatNewsCollectorTitle(status: NewsCollectorStatus | null) {
+  if (!status) return "뉴스 수집기 확인 중";
+  if (status.collecting) return "새 뉴스를 수집하고 있습니다.";
+  if (status.last_error) return "최근 수집에서 오류가 발생했습니다.";
+  if (status.last_finished_at_unix) {
+    return `최근 ${status.last_inserted_count}건 추가`;
+  }
+  return "첫 수집 대기 중";
+}
+
+function formatNewsCollectorDetail(status: NewsCollectorStatus | null) {
+  if (!status) return "원문과 이미지는 저장하지 않습니다.";
+  if (status.last_error) return status.last_error;
+  return `${status.interval_hours}시간 간격 · 하루 최대 ${status.daily_limit}건 · ${status.retention_days}일 보관`;
 }
 
 function formatRunTime(timestampUnix: number) {
