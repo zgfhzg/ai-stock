@@ -3,6 +3,8 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from app.news_analysis import NewsAnalysisRequest, NewsAnalysisResponse, analyze_news
+
 
 app = FastAPI(title="AI Stock Strategy")
 
@@ -105,3 +107,8 @@ def create_proposal(request: ProposalRequest) -> ProposalResponse:
             f"{trading_mode} 환경에서는 아직 추가 확인 후 관망합니다."
         ),
     )
+
+
+@app.post("/news/analyze")
+def create_news_analysis(request: NewsAnalysisRequest) -> NewsAnalysisResponse:
+    return analyze_news(request)

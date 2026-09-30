@@ -28,6 +28,44 @@ pub struct ProposalResponse {
     pub live_order_allowed: bool,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NewsArticleInput {
+    pub id: i64,
+    pub title: String,
+    pub source: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct NewsAnalysisRequest {
+    pub articles: Vec<NewsArticleInput>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RelatedStock {
+    pub name: String,
+    pub symbol: String,
+    pub relevance: f64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NewsAnalysis {
+    pub article_id: i64,
+    pub summary: String,
+    pub sentiment: String,
+    pub sentiment_score: f64,
+    pub importance: u8,
+    pub impact_horizon: String,
+    pub related_stocks: Vec<RelatedStock>,
+    pub rationale: String,
+}
+
+#[derive(Deserialize)]
+pub struct NewsAnalysisResponse {
+    pub model: String,
+    pub analyses: Vec<NewsAnalysis>,
+}
+
 pub async fn health(state: &AppState) -> anyhow::Result<StrategyHealth> {
     let url = format!("{}/health", state.config.strategy_url);
     let response = state.http.get(url).send().await?.error_for_status()?;
@@ -54,6 +92,21 @@ pub async fn proposal(state: &AppState, request: &ProposalRequest) -> ProposalRe
 
     proposal.live_order_allowed = state.config.live_trading_enabled && proposal.action != "hold";
     proposal
+}
+
+pub async fn analyze_news(
+    state: &AppState,
+    articles: Vec<NewsArticleInput>,
+) -> anyhow::Result<NewsAnalysisResponse> {
+    let url = format!("{}/news/analyze", state.config.strategy_url);
+    let response = state
+        .http
+        .post(url)
+        .json(&NewsAnalysisRequest { articles })
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(response.json::<NewsAnalysisResponse>().await?)
 }
 
 fn fallback_proposal(symbol: &str) -> ProposalResponse {

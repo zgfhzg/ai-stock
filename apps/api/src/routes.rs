@@ -15,7 +15,7 @@ use crate::{
     },
     error::ApiResult,
     kis::{self, KisConfigStatus},
-    news::{self, NewsArticle, NewsCollectorStatus},
+    news::{self, NewsAnalysisRun, NewsArticle, NewsCollectorStatus},
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -72,6 +72,7 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/news", get(news_list))
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
+        .route("/api/news/analyze", post(analyze_news))
         .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/auto-trading/run", post(run_auto_trading))
         .route("/api/auto-trading/runs", get(auto_trading_logs))
@@ -280,6 +281,10 @@ async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollec
 
 async fn collect_news(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {
     Ok(Json(news::collect_once(&state).await?))
+}
+
+async fn analyze_news(State(state): State<AppState>) -> ApiResult<Json<NewsAnalysisRun>> {
+    Ok(Json(news::analyze_pending(&state).await?))
 }
 
 async fn order_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {

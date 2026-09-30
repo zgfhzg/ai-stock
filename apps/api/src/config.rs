@@ -42,6 +42,8 @@ pub struct AppConfig {
     pub news_retention_days: u64,
     pub news_daily_limit: u32,
     pub news_max_database_bytes: u64,
+    pub news_analysis_enabled: bool,
+    pub news_analysis_batch_size: usize,
     pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
@@ -145,6 +147,12 @@ impl AppConfig {
             news_max_database_bytes: read_env("NEWS_MAX_DATABASE_BYTES", "1073741824")
                 .parse()
                 .unwrap_or(1_073_741_824),
+            news_analysis_enabled: read_env("NEWS_ANALYSIS_ENABLED", "true") == "true"
+                && !read_env("OPENAI_API_KEY", "").trim().is_empty(),
+            news_analysis_batch_size: read_env("NEWS_ANALYSIS_BATCH_SIZE", "10")
+                .parse::<usize>()
+                .unwrap_or(10)
+                .clamp(1, 20),
             max_overseas_order_amount_usd: read_env("MAX_OVERSEAS_ORDER_AMOUNT_USD", "100")
                 .parse()
                 .unwrap_or(100.0),

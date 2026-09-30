@@ -153,6 +153,17 @@ type NewsArticle = {
   published_at_unix: number;
   collected_at_unix: number;
   summary?: string | null;
+  analysis_status: "pending" | "analyzed" | "failed";
+  ai_summary?: string | null;
+  sentiment?: "positive" | "neutral" | "negative" | null;
+  sentiment_score?: number | null;
+  importance?: number | null;
+  impact_horizon?: string | null;
+  related_stocks: Array<{ name?: string; symbol?: string; relevance?: number }>;
+  rationale?: string | null;
+  analysis_model?: string | null;
+  analyzed_at_unix?: number | null;
+  analysis_error?: string | null;
 };
 
 type NewsCollectorStatus = {
@@ -169,6 +180,18 @@ type NewsCollectorStatus = {
   next_collection_at_unix?: number | null;
   last_inserted_count: number;
   last_error?: string | null;
+  analyzed_count: number;
+  pending_analysis_count: number;
+  failed_analysis_count: number;
+  last_analysis_error?: string | null;
+  analysis_enabled: boolean;
+};
+
+type NewsAnalysisRun = {
+  requested: number;
+  analyzed: number;
+  failed: number;
+  model?: string | null;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -330,6 +353,7 @@ function App() {
   const [news, setNews] = React.useState<NewsArticle[]>([]);
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
   const [newsCollecting, setNewsCollecting] = React.useState(false);
+  const [newsAnalyzing, setNewsAnalyzing] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -603,6 +627,15 @@ function App() {
       .then(loadNews)
       .catch((error) => setError(error instanceof Error ? error.message : "뉴스를 수집하지 못했습니다."))
       .finally(() => setNewsCollecting(false));
+  }
+
+  function handleAnalyzeNews() {
+    setNewsAnalyzing(true);
+    setError(null);
+    fetchJson<NewsAnalysisRun>("/api/news/analyze", { method: "POST" })
+      .then(loadNews)
+      .catch((error) => setError(error instanceof Error ? error.message : "뉴스 AI 분석에 실패했습니다."))
+      .finally(() => setNewsAnalyzing(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1015,10 +1048,16 @@ function App() {
                 <strong>{formatNewsCollectorTitle(newsStatus)}</strong>
                 <span>{formatNewsCollectorDetail(newsStatus)}</span>
               </div>
-              <button type="button" onClick={handleCollectNews} disabled={newsCollecting || newsStatus?.collecting}>
-                <RefreshCw size={17} />
-                <span>{newsCollecting || newsStatus?.collecting ? "수집 중" : "지금 수집"}</span>
-              </button>
+              <div className="news-actions">
+                <button type="button" onClick={handleCollectNews} disabled={newsCollecting || newsStatus?.collecting}>
+                  <RefreshCw size={17} />
+                  <span>{newsCollecting || newsStatus?.collecting ? "수집 중" : "지금 수집"}</span>
+                </button>
+                <button type="button" onClick={handleAnalyzeNews} disabled={newsAnalyzing || !newsStatus?.analysis_enabled || !newsStatus?.pending_analysis_count}>
+                  <Bot size={17} />
+                  <span>{newsAnalyzing ? "분석 중" : "AI 분석"}</span>
+                </button>
+              </div>
             </div>
             {news.length > 0 ? (
               <div className="news-list">
@@ -1026,9 +1065,16 @@ function App() {
                   <a className="news-row" href={article.url} key={article.id} rel="noreferrer" target="_blank">
                     <div>
                       <strong>{article.title}</strong>
-                      <span>{article.source} · {formatRunTime(article.published_at_unix)}</span>
+                      <span>{article.source} · {formatRunTime(article.published_at_unix)} · {formatNewsAnalysisStatus(article)}</span>
                     </div>
-                    <span>{article.summary || "요약은 AI 분석 단계에서 생성됩니다."}</span>
+                    <div className="news-analysis-copy">
+                      <span>{article.ai_summary || article.summary || "AI 분석을 기다리고 있습니다."}</span>
+                      {article.analysis_status === "analyzed" ? (
+                        <small className={`news-sentiment ${article.sentiment ?? "neutral"}`}>
+                          {formatNewsSentiment(article.sentiment)} · 중요도 {article.importance ?? 1}/5 · {formatImpactHorizon(article.impact_horizon)}
+                        </small>
+                      ) : null}
+                    </div>
                   </a>
                 ))}
               </div>
@@ -2159,7 +2205,32 @@ function formatNewsCollectorTitle(status: NewsCollectorStatus | null) {
 function formatNewsCollectorDetail(status: NewsCollectorStatus | null) {
   if (!status) return "원문과 이미지는 저장하지 않습니다.";
   if (status.last_error) return status.last_error;
-  return `${status.interval_hours}시간 간격 · 하루 최대 ${status.daily_limit}건 · ${status.retention_days}일 보관`;
+  if (!status.analysis_enabled) return "뉴스 수집 정상 · AI 분석은 OPENAI_API_KEY 설정 후 활성화됩니다.";
+  if (status.last_analysis_error) return `수집 정상 · AI 분석 오류: ${status.last_analysis_error}`;
+  return `${status.interval_hours}시간 간격 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count}`;
+}
+
+function formatNewsAnalysisStatus(article: NewsArticle) {
+  if (article.analysis_status === "analyzed") return "AI 분석 완료";
+  if (article.analysis_status === "failed") return "분석 재시도 대기";
+  return "분석 대기";
+}
+
+function formatNewsSentiment(sentiment?: string | null) {
+  if (sentiment === "positive") return "긍정";
+  if (sentiment === "negative") return "부정";
+  return "중립";
+}
+
+function formatImpactHorizon(horizon?: string | null) {
+  const labels: Record<string, string> = {
+    intraday: "당일 영향",
+    short_term: "단기 영향",
+    medium_term: "중기 영향",
+    long_term: "장기 영향",
+    unknown: "영향기간 불명",
+  };
+  return labels[horizon ?? "unknown"] ?? "영향기간 불명";
 }
 
 function formatRunTime(timestampUnix: number) {

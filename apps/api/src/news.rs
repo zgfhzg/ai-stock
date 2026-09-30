@@ -2,6 +2,7 @@ use axum::{http::StatusCode, Json};
 use feed_rs::parser;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use serde_json::Value;
 use std::{
     fs,
     path::Path,
@@ -15,6 +16,7 @@ use tokio::{
 use crate::{
     error::{api_error, ApiResult},
     state::AppState,
+    strategy::{self, NewsArticleInput},
 };
 
 #[derive(Clone, Serialize)]
@@ -26,6 +28,25 @@ pub struct NewsArticle {
     pub published_at_unix: i64,
     pub collected_at_unix: i64,
     pub summary: Option<String>,
+    pub analysis_status: String,
+    pub ai_summary: Option<String>,
+    pub sentiment: Option<String>,
+    pub sentiment_score: Option<f64>,
+    pub importance: Option<u8>,
+    pub impact_horizon: Option<String>,
+    pub related_stocks: Vec<Value>,
+    pub rationale: Option<String>,
+    pub analysis_model: Option<String>,
+    pub analyzed_at_unix: Option<i64>,
+    pub analysis_error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct NewsAnalysisRun {
+    pub requested: usize,
+    pub analyzed: usize,
+    pub failed: usize,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -43,6 +64,11 @@ pub struct NewsCollectorStatus {
     pub next_collection_at_unix: Option<u64>,
     pub last_inserted_count: u32,
     pub last_error: Option<String>,
+    pub analyzed_count: u64,
+    pub pending_analysis_count: u64,
+    pub failed_analysis_count: u64,
+    pub last_analysis_error: Option<String>,
+    pub analysis_enabled: bool,
 }
 
 pub struct NewsCollectorRuntime {
@@ -68,6 +94,11 @@ impl Default for NewsCollectorRuntime {
                 next_collection_at_unix: None,
                 last_inserted_count: 0,
                 last_error: None,
+                analyzed_count: 0,
+                pending_analysis_count: 0,
+                failed_analysis_count: 0,
+                last_analysis_error: None,
+                analysis_enabled: false,
             },
         }
     }
@@ -88,11 +119,24 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              source TEXT NOT NULL,
              published_at_unix INTEGER NOT NULL,
              collected_at_unix INTEGER NOT NULL,
-             summary TEXT
+             summary TEXT,
+             analysis_status TEXT NOT NULL DEFAULT 'pending',
+             ai_summary TEXT,
+             sentiment TEXT,
+             sentiment_score REAL,
+             importance INTEGER,
+             impact_horizon TEXT,
+             related_stocks_json TEXT NOT NULL DEFAULT '[]',
+             rationale TEXT,
+             analysis_model TEXT,
+             analyzed_at_unix INTEGER,
+             analysis_error TEXT,
+             analysis_attempts INTEGER NOT NULL DEFAULT 0
          );
          CREATE INDEX IF NOT EXISTS idx_news_published
              ON news_articles(published_at_unix DESC);",
     )?;
+    ensure_analysis_columns(&connection)?;
     Ok(())
 }
 
@@ -108,6 +152,7 @@ pub async fn start_collector(state: &AppState) {
     runtime.status.retention_days = state.config.news_retention_days.max(1);
     runtime.status.daily_limit = state.config.news_daily_limit.max(1);
     runtime.status.max_database_bytes = state.config.news_max_database_bytes.max(1_048_576);
+    runtime.status.analysis_enabled = state.config.news_analysis_enabled;
 
     let worker_state = state.clone();
     runtime.handle = Some(tokio::spawn(async move {
@@ -136,6 +181,11 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
     }
 
     let result = fetch_and_store(state).await;
+    let analysis_result = if result.is_ok() && state.config.news_analysis_enabled {
+        Some(analyze_pending(state).await)
+    } else {
+        None
+    };
     let mut runtime = state.news_collector.lock().await;
     runtime.status.collecting = false;
     runtime.status.last_finished_at_unix = Some(unix_now());
@@ -145,6 +195,9 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
     match result {
         Ok(inserted) => {
             runtime.status.last_inserted_count = inserted;
+            runtime.status.last_analysis_error = analysis_result
+                .and_then(Result::err)
+                .map(|(_, Json(error))| error.message);
             refresh_storage_stats(state, &mut runtime.status)?;
             Ok(runtime.status.clone())
         }
@@ -169,7 +222,10 @@ pub fn list(state: &AppState, limit: usize) -> ApiResult<Vec<NewsArticle>> {
     let connection = open_database(state).map_err(database_error)?;
     let mut statement = connection
         .prepare(
-            "SELECT id, title, url, source, published_at_unix, collected_at_unix, summary
+            "SELECT id, title, url, source, published_at_unix, collected_at_unix, summary,
+                    analysis_status, ai_summary, sentiment, sentiment_score, importance,
+                    impact_horizon, related_stocks_json, rationale, analysis_model,
+                    analyzed_at_unix, analysis_error
              FROM news_articles ORDER BY published_at_unix DESC LIMIT ?1",
         )
         .map_err(database_error)?;
@@ -183,11 +239,92 @@ pub fn list(state: &AppState, limit: usize) -> ApiResult<Vec<NewsArticle>> {
                 published_at_unix: row.get(4)?,
                 collected_at_unix: row.get(5)?,
                 summary: row.get(6)?,
+                analysis_status: row.get(7)?,
+                ai_summary: row.get(8)?,
+                sentiment: row.get(9)?,
+                sentiment_score: row.get(10)?,
+                importance: row.get(11)?,
+                impact_horizon: row.get(12)?,
+                related_stocks: serde_json::from_str::<Vec<Value>>(&row.get::<_, String>(13)?)
+                    .unwrap_or_default(),
+                rationale: row.get(14)?,
+                analysis_model: row.get(15)?,
+                analyzed_at_unix: row.get(16)?,
+                analysis_error: row.get(17)?,
             })
         })
         .map_err(database_error)?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+}
+
+pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
+    if !state.config.news_analysis_enabled {
+        return Err(api_error(
+            StatusCode::PRECONDITION_FAILED,
+            "news_analysis_disabled",
+            "NEWS_ANALYSIS_ENABLED must be true.",
+        ));
+    }
+
+    let articles = pending_articles(state)?;
+    if articles.is_empty() {
+        return Ok(NewsAnalysisRun {
+            requested: 0,
+            analyzed: 0,
+            failed: 0,
+            model: None,
+        });
+    }
+
+    let requested = articles.len();
+    match strategy::analyze_news(state, articles.clone()).await {
+        Ok(response) => {
+            let connection = open_database(state).map_err(database_error)?;
+            let now = unix_now() as i64;
+            for analysis in &response.analyses {
+                let related_stocks =
+                    serde_json::to_string(&analysis.related_stocks).map_err(database_error)?;
+                connection
+                    .execute(
+                        "UPDATE news_articles SET
+                            analysis_status = 'analyzed', ai_summary = ?1, sentiment = ?2,
+                            sentiment_score = ?3, importance = ?4, impact_horizon = ?5,
+                            related_stocks_json = ?6, rationale = ?7, analysis_model = ?8,
+                            analyzed_at_unix = ?9, analysis_error = NULL,
+                            analysis_attempts = analysis_attempts + 1
+                         WHERE id = ?10",
+                        params![
+                            analysis.summary,
+                            analysis.sentiment,
+                            analysis.sentiment_score,
+                            analysis.importance,
+                            analysis.impact_horizon,
+                            related_stocks,
+                            analysis.rationale,
+                            response.model,
+                            now,
+                            analysis.article_id,
+                        ],
+                    )
+                    .map_err(database_error)?;
+            }
+            Ok(NewsAnalysisRun {
+                requested,
+                analyzed: response.analyses.len(),
+                failed: requested.saturating_sub(response.analyses.len()),
+                model: Some(response.model),
+            })
+        }
+        Err(error) => {
+            mark_analysis_failed(state, &articles, &error.to_string())?;
+            Err(api_error(
+                StatusCode::BAD_GATEWAY,
+                "news_analysis_failed",
+                error,
+            ))
+        }
+    }
 }
 
 async fn fetch_and_store(state: &AppState) -> anyhow::Result<u32> {
@@ -315,6 +452,90 @@ fn refresh_storage_stats(state: &AppState, status: &mut NewsCollectorStatus) -> 
         .filter_map(|path| fs::metadata(path).ok())
         .map(|metadata| metadata.len())
         .sum();
+    status.analyzed_count = count_by_analysis_status(&connection, "analyzed")?;
+    status.pending_analysis_count = count_by_analysis_status(&connection, "pending")?;
+    status.failed_analysis_count = count_by_analysis_status(&connection, "failed")?;
+    Ok(())
+}
+
+fn count_by_analysis_status(connection: &Connection, value: &str) -> ApiResult<u64> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM news_articles WHERE analysis_status = ?1",
+            [value],
+            |row| row.get(0),
+        )
+        .map_err(database_error)
+}
+
+fn pending_articles(state: &AppState) -> ApiResult<Vec<NewsArticleInput>> {
+    let connection = open_database(state).map_err(database_error)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, title, source, summary FROM news_articles
+             WHERE analysis_status IN ('pending', 'failed') AND analysis_attempts < 3
+             ORDER BY published_at_unix DESC LIMIT ?1",
+        )
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map([state.config.news_analysis_batch_size as i64], |row| {
+            Ok(NewsArticleInput {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                source: row.get(2)?,
+                summary: row.get(3)?,
+            })
+        })
+        .map_err(database_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+}
+
+fn mark_analysis_failed(
+    state: &AppState,
+    articles: &[NewsArticleInput],
+    error: &str,
+) -> ApiResult<()> {
+    let connection = open_database(state).map_err(database_error)?;
+    let error = error.chars().take(500).collect::<String>();
+    for article in articles {
+        connection
+            .execute(
+                "UPDATE news_articles SET analysis_status = 'failed', analysis_error = ?1,
+                 analysis_attempts = analysis_attempts + 1 WHERE id = ?2",
+                params![error, article.id],
+            )
+            .map_err(database_error)?;
+    }
+    Ok(())
+}
+
+fn ensure_analysis_columns(connection: &Connection) -> anyhow::Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(news_articles)")?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+    let columns = [
+        ("analysis_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("ai_summary", "TEXT"),
+        ("sentiment", "TEXT"),
+        ("sentiment_score", "REAL"),
+        ("importance", "INTEGER"),
+        ("impact_horizon", "TEXT"),
+        ("related_stocks_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("rationale", "TEXT"),
+        ("analysis_model", "TEXT"),
+        ("analyzed_at_unix", "INTEGER"),
+        ("analysis_error", "TEXT"),
+        ("analysis_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    drop(statement);
+    for (name, definition) in columns {
+        if !existing.contains(name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE news_articles ADD COLUMN {name} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 

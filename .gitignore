@@ -5,6 +5,7 @@
 target/
 __pycache__/
 .venv/
+*.egg-info/
 node_modules/
 dist/
 build/
