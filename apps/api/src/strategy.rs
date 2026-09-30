@@ -64,6 +64,14 @@ pub struct NewsAnalysis {
 pub struct NewsAnalysisResponse {
     pub model: String,
     pub analyses: Vec<NewsAnalysis>,
+    pub usage: Option<NewsAnalysisUsage>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct NewsAnalysisUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 pub async fn health(state: &AppState) -> anyhow::Result<StrategyHealth> {

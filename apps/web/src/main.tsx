@@ -192,6 +192,21 @@ type NewsAnalysisRun = {
   analyzed: number;
   failed: number;
   model?: string | null;
+  elapsed_ms: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost_usd?: number | null;
+};
+
+type StockNewsGroup = {
+  symbol: string;
+  name: string;
+  market: string;
+  article_count: number;
+  latest_published_at_unix: number;
+  average_sentiment_score?: number | null;
+  articles: NewsArticle[];
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -352,6 +367,8 @@ function App() {
   const [autoMonitorBusy, setAutoMonitorBusy] = React.useState(false);
   const [news, setNews] = React.useState<NewsArticle[]>([]);
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
+  const [lastNewsAnalysisRun, setLastNewsAnalysisRun] = React.useState<NewsAnalysisRun | null>(null);
+  const [stockNewsGroups, setStockNewsGroups] = React.useState<StockNewsGroup[]>([]);
   const [newsCollecting, setNewsCollecting] = React.useState(false);
   const [newsAnalyzing, setNewsAnalyzing] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
@@ -608,14 +625,17 @@ function App() {
     return Promise.all([
       fetchJson<NewsArticle[]>("/api/news?limit=20"),
       fetchJson<NewsCollectorStatus>("/api/news/status"),
+      fetchJson<StockNewsGroup[]>("/api/news/stocks"),
     ])
-      .then(([articles, collector]) => {
+      .then(([articles, collector, groups]) => {
         setNews(articles);
         setNewsStatus(collector);
+        setStockNewsGroups(groups);
       })
       .catch(() => {
         setNews([]);
         setNewsStatus(null);
+        setStockNewsGroups([]);
       });
   }
 
@@ -633,7 +653,10 @@ function App() {
     setNewsAnalyzing(true);
     setError(null);
     fetchJson<NewsAnalysisRun>("/api/news/analyze", { method: "POST" })
-      .then(loadNews)
+      .then((run) => {
+        setLastNewsAnalysisRun(run);
+        return loadNews();
+      })
       .catch((error) => setError(error instanceof Error ? error.message : "뉴스 AI 분석에 실패했습니다."))
       .finally(() => setNewsAnalyzing(false));
   }
@@ -1047,6 +1070,7 @@ function App() {
               <div>
                 <strong>{formatNewsCollectorTitle(newsStatus)}</strong>
                 <span>{formatNewsCollectorDetail(newsStatus)}</span>
+                {lastNewsAnalysisRun ? <small>{formatNewsAnalysisRun(lastNewsAnalysisRun)}</small> : null}
               </div>
               <div className="news-actions">
                 <button type="button" onClick={handleCollectNews} disabled={newsCollecting || newsStatus?.collecting}>
@@ -1059,6 +1083,16 @@ function App() {
                 </button>
               </div>
             </div>
+            {stockNewsGroups.length > 0 ? (
+              <div className="stock-news-groups" aria-label="종목별 관련 뉴스">
+                {stockNewsGroups.slice(0, 6).map((group) => (
+                  <div className="stock-news-group" key={group.symbol}>
+                    <strong>{group.name}</strong>
+                    <span>{group.symbol} · {group.article_count}건 · {formatAverageSentiment(group.average_sentiment_score)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {news.length > 0 ? (
               <div className="news-list">
                 {news.slice(0, 10).map((article) => (
@@ -1073,6 +1107,13 @@ function App() {
                         <small className={`news-sentiment ${article.sentiment ?? "neutral"}`}>
                           {formatNewsSentiment(article.sentiment)} · 중요도 {article.importance ?? 1}/5 · {formatImpactHorizon(article.impact_horizon)}
                         </small>
+                      ) : null}
+                      {article.related_stocks.length > 0 ? (
+                        <div className="news-stock-tags">
+                          {article.related_stocks.map((stock) => (
+                            <small key={`${article.id}-${stock.symbol || stock.name}`}>{stock.name} {stock.symbol}</small>
+                          ))}
+                        </div>
                       ) : null}
                     </div>
                   </a>
@@ -2210,6 +2251,16 @@ function formatNewsCollectorDetail(status: NewsCollectorStatus | null) {
   return `${status.interval_hours}시간 간격 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count}`;
 }
 
+function formatNewsAnalysisRun(run: NewsAnalysisRun) {
+  const seconds = (run.elapsed_ms / 1000).toFixed(run.elapsed_ms >= 10_000 ? 1 : 2);
+  const tokens = run.total_tokens ? `${run.total_tokens.toLocaleString("ko-KR")}토큰` : "토큰 미집계";
+  const cost =
+    run.estimated_cost_usd != null
+      ? `예상 $${run.estimated_cost_usd.toFixed(run.estimated_cost_usd >= 0.01 ? 4 : 6)}`
+      : "비용 미집계";
+  return `최근 AI 분석 ${run.analyzed}/${run.requested}건 · ${seconds}초 · ${tokens} · ${cost}`;
+}
+
 function formatNewsAnalysisStatus(article: NewsArticle) {
   if (article.analysis_status === "analyzed") return "AI 분석 완료";
   if (article.analysis_status === "failed") return "분석 재시도 대기";
@@ -2258,6 +2309,13 @@ function formatMode(mode: string, executed: boolean) {
     return "자동주문 대기";
   }
   return "추천만";
+}
+
+function formatAverageSentiment(score?: number | null) {
+  if (score == null) return "감성 미집계";
+  if (score >= 0.25) return "긍정 우세";
+  if (score <= -0.25) return "부정 우세";
+  return "중립";
 }
 
 function formatRuleTrigger(trigger: TradingRuleTrigger) {

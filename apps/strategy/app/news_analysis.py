@@ -48,6 +48,12 @@ class NewsAnalysisBatch(BaseModel):
     analyses: list[NewsAnalysis]
 
 
+class TokenUsage(BaseModel):
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 class NewsAnalysisRequest(BaseModel):
     articles: list[NewsArticleInput] = Field(min_length=1, max_length=20)
 
@@ -55,6 +61,7 @@ class NewsAnalysisRequest(BaseModel):
 class NewsAnalysisResponse(BaseModel):
     model: str
     analyses: list[NewsAnalysis]
+    usage: TokenUsage | None = None
 
 
 SYSTEM_PROMPT = """
@@ -94,4 +101,19 @@ def analyze_news(request: NewsAnalysisRequest) -> NewsAnalysisResponse:
     if expected_ids != returned_ids or len(parsed.analyses) != len(request.articles):
         raise RuntimeError("The model response did not contain exactly one result per article")
 
-    return NewsAnalysisResponse(model=model, analyses=parsed.analyses)
+    return NewsAnalysisResponse(
+        model=model,
+        analyses=parsed.analyses,
+        usage=extract_usage(response),
+    )
+
+
+def extract_usage(response) -> TokenUsage | None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    return TokenUsage(
+        input_tokens=getattr(usage, "input_tokens", None),
+        output_tokens=getattr(usage, "output_tokens", None),
+        total_tokens=getattr(usage, "total_tokens", None),
+    )

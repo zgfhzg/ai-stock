@@ -15,7 +15,7 @@ use crate::{
     },
     error::ApiResult,
     kis::{self, KisConfigStatus},
-    news::{self, NewsAnalysisRun, NewsArticle, NewsCollectorStatus},
+    news::{self, NewsAnalysisRun, NewsArticle, NewsCollectorStatus, StockNewsGroup},
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -70,6 +70,7 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/news", get(news_list))
+        .route("/api/news/stocks", get(news_stock_groups))
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
         .route("/api/news/analyze", post(analyze_news))
@@ -273,6 +274,10 @@ async fn news_list(
     Query(query): Query<NewsListQuery>,
 ) -> ApiResult<Json<Vec<NewsArticle>>> {
     Ok(Json(news::list(&state, query.limit.unwrap_or(30))?))
+}
+
+async fn news_stock_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<StockNewsGroup>>> {
+    Ok(Json(news::grouped_by_stock(&state, 100)?))
 }
 
 async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {

@@ -4,8 +4,10 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
+    time::Instant,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -16,6 +18,7 @@ use tokio::{
 use crate::{
     error::{api_error, ApiResult},
     state::AppState,
+    stocks,
     strategy::{self, NewsArticleInput},
 };
 
@@ -47,6 +50,22 @@ pub struct NewsAnalysisRun {
     pub analyzed: usize,
     pub failed: usize,
     pub model: Option<String>,
+    pub elapsed_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct StockNewsGroup {
+    pub symbol: String,
+    pub name: String,
+    pub market: String,
+    pub article_count: usize,
+    pub latest_published_at_unix: i64,
+    pub average_sentiment_score: Option<f64>,
+    pub articles: Vec<NewsArticle>,
 }
 
 #[derive(Clone, Serialize)]
@@ -258,6 +277,69 @@ pub fn list(state: &AppState, limit: usize) -> ApiResult<Vec<NewsArticle>> {
     rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
 }
 
+pub fn grouped_by_stock(state: &AppState, limit: usize) -> ApiResult<Vec<StockNewsGroup>> {
+    let articles = list(state, limit)?;
+    let mut groups = BTreeMap::<String, StockNewsGroup>::new();
+    let mut sentiment_sums = BTreeMap::<String, (f64, usize)>::new();
+
+    for article in articles {
+        for related_stock in &article.related_stocks {
+            let Some(symbol) = related_stock.get("symbol").and_then(Value::as_str) else {
+                continue;
+            };
+            if !is_korean_stock_symbol(symbol) {
+                continue;
+            }
+            let Some(name) = related_stock.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let market = related_stock
+                .get("market")
+                .and_then(Value::as_str)
+                .unwrap_or("KRX");
+            let group = groups.entry(symbol.to_string()).or_insert_with(|| StockNewsGroup {
+                symbol: symbol.to_string(),
+                name: name.to_string(),
+                market: market.to_string(),
+                article_count: 0,
+                latest_published_at_unix: article.published_at_unix,
+                average_sentiment_score: None,
+                articles: Vec::new(),
+            });
+            group.article_count += 1;
+            group.latest_published_at_unix =
+                group.latest_published_at_unix.max(article.published_at_unix);
+            if group.articles.len() < 5 {
+                group.articles.push(article.clone());
+            }
+            if let Some(score) = article.sentiment_score {
+                let entry = sentiment_sums.entry(symbol.to_string()).or_insert((0.0, 0));
+                entry.0 += score;
+                entry.1 += 1;
+            }
+        }
+    }
+
+    for (symbol, (sum, count)) in sentiment_sums {
+        if let Some(group) = groups.get_mut(&symbol) {
+            group.average_sentiment_score = Some(sum / count as f64);
+        }
+    }
+
+    let mut groups = groups.into_values().collect::<Vec<_>>();
+    groups.sort_by(|left, right| {
+        right
+            .article_count
+            .cmp(&left.article_count)
+            .then_with(|| right.latest_published_at_unix.cmp(&left.latest_published_at_unix))
+    });
+    Ok(groups)
+}
+
+fn is_korean_stock_symbol(value: &str) -> bool {
+    value.len() == 6 && value.chars().all(|char| char.is_ascii_digit())
+}
+
 pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
     if !state.config.news_analysis_enabled {
         return Err(api_error(
@@ -274,17 +356,23 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
             analyzed: 0,
             failed: 0,
             model: None,
+            elapsed_ms: 0,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            estimated_cost_usd: None,
         });
     }
 
     let requested = articles.len();
+    let started_at = Instant::now();
     match strategy::analyze_news(state, articles.clone()).await {
         Ok(response) => {
+            let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let connection = open_database(state).map_err(database_error)?;
             let now = unix_now() as i64;
             for analysis in &response.analyses {
-                let related_stocks =
-                    serde_json::to_string(&analysis.related_stocks).map_err(database_error)?;
+                let related_stocks = resolve_related_stocks(state, &analysis.related_stocks)?;
                 connection
                     .execute(
                         "UPDATE news_articles SET
@@ -309,11 +397,23 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
                     )
                     .map_err(database_error)?;
             }
+            let input_tokens = response.usage.as_ref().and_then(|usage| usage.input_tokens);
+            let output_tokens = response.usage.as_ref().and_then(|usage| usage.output_tokens);
+            let total_tokens = response.usage.as_ref().and_then(|usage| usage.total_tokens);
             Ok(NewsAnalysisRun {
                 requested,
                 analyzed: response.analyses.len(),
                 failed: requested.saturating_sub(response.analyses.len()),
+                estimated_cost_usd: estimate_news_analysis_cost(
+                    &response.model,
+                    input_tokens,
+                    output_tokens,
+                ),
                 model: Some(response.model),
+                elapsed_ms,
+                input_tokens,
+                output_tokens,
+                total_tokens,
             })
         }
         Err(error) => {
@@ -325,6 +425,44 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
             ))
         }
     }
+}
+
+fn resolve_related_stocks(
+    state: &AppState,
+    related_stocks: &[strategy::RelatedStock],
+) -> ApiResult<String> {
+    let mut resolved = Vec::new();
+    for related in related_stocks {
+        let Some(stock) = stocks::resolve_news_stock(state, &related.name, &related.symbol)? else {
+            continue;
+        };
+        resolved.push(serde_json::json!({
+            "name": stock.name,
+            "symbol": stock.symbol,
+            "market": stock.market,
+            "relevance": related.relevance,
+            "ai_name": related.name,
+            "ai_symbol": related.symbol,
+        }));
+    }
+    serde_json::to_string(&resolved).map_err(database_error)
+}
+
+fn estimate_news_analysis_cost(
+    model: &str,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+) -> Option<f64> {
+    let (input_per_million, output_per_million) = match model {
+        // OpenAI API pricing for gpt-4o-mini: $0.15 / 1M input, $0.60 / 1M output.
+        "gpt-4o-mini" | "gpt-4o-mini-2024-07-18" => (0.15, 0.60),
+        _ => return None,
+    };
+    Some(
+        (input_tokens? as f64 * input_per_million
+            + output_tokens? as f64 * output_per_million)
+            / 1_000_000.0,
+    )
 }
 
 async fn fetch_and_store(state: &AppState) -> anyhow::Result<u32> {

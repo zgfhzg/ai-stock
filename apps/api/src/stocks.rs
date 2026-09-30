@@ -74,6 +74,37 @@ pub fn resolve_one(state: &AppState, query: &str) -> ApiResult<Stock> {
     }
 }
 
+pub fn resolve_news_stock(state: &AppState, name: &str, symbol: &str) -> ApiResult<Option<Stock>> {
+    let name = name.trim();
+    let symbol = symbol.trim();
+    let catalog = read_catalog(&state.config.stock_catalog_path)?;
+
+    if is_stock_symbol(symbol) {
+        let Some(stock) = catalog.into_iter().find(|stock| stock.symbol == symbol) else {
+            return Ok(None);
+        };
+        if name.is_empty() || normalize(&stock.name) == normalize(name) {
+            return Ok(Some(stock));
+        }
+        return Ok(None);
+    }
+
+    if name.is_empty() {
+        return Ok(None);
+    }
+
+    let normalized_name = normalize(name);
+    let exact_matches = catalog
+        .into_iter()
+        .filter(|stock| normalize(&stock.name) == normalized_name)
+        .collect::<Vec<_>>();
+
+    match exact_matches.as_slice() {
+        [stock] => Ok(Some(stock.clone())),
+        _ => Ok(None),
+    }
+}
+
 fn read_catalog(path: &str) -> ApiResult<Vec<Stock>> {
     if !Path::new(path).exists() {
         return Ok(default_catalog());
@@ -99,6 +130,10 @@ fn default_catalog() -> Vec<Stock> {
     ]
 }
 
+fn is_stock_symbol(value: &str) -> bool {
+    value.len() == 6 && value.chars().all(|char| char.is_ascii_digit())
+}
+
 fn rank_match(stock: &Stock, raw_query: &str, normalized_query: &str) -> u8 {
     let normalized_name = normalize(&stock.name);
 
@@ -110,6 +145,40 @@ fn rank_match(stock: &Stock, raw_query: &str, normalized_query: &str) -> u8 {
         2
     } else {
         3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state_with_catalog(path: String) -> AppState {
+        let mut config = crate::config::AppConfig::load();
+        config.stock_catalog_path = path;
+        AppState::new(config)
+    }
+
+    #[test]
+    fn resolves_exact_news_stock_name() {
+        let path = "../../data/stocks.json".to_string();
+        let state = test_state_with_catalog(path);
+        let stock = match resolve_news_stock(&state, "삼성전자", "") {
+            Ok(Some(stock)) => stock,
+            Ok(None) => panic!("expected 삼성전자 to resolve"),
+            Err(_) => panic!("expected stock catalog lookup to succeed"),
+        };
+        assert_eq!(stock.symbol, "005930");
+    }
+
+    #[test]
+    fn rejects_mismatched_news_stock_symbol() {
+        let path = "../../data/stocks.json".to_string();
+        let state = test_state_with_catalog(path);
+        let stock = match resolve_news_stock(&state, "삼성전자우", "005930") {
+            Ok(stock) => stock,
+            Err(_) => panic!("expected stock catalog lookup to succeed"),
+        };
+        assert!(stock.is_none());
     }
 }
 
