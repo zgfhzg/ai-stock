@@ -97,6 +97,14 @@ pub struct DailyStockOutlook {
     pub event_keys: Vec<String>,
     pub model: String,
     pub generated_at_unix: i64,
+    pub current_price: Option<u64>,
+    pub previous_change_rate: Option<f64>,
+    pub accumulated_volume: Option<u64>,
+    pub intraday_volatility: Option<f64>,
+    pub market_checked_at_unix: Option<i64>,
+    pub signal_expires_at_unix: i64,
+    pub decision_status: String,
+    pub block_reason: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -196,10 +204,19 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              event_keys_json TEXT NOT NULL,
              model TEXT NOT NULL,
              generated_at_unix INTEGER NOT NULL,
+             current_price INTEGER,
+             previous_change_rate REAL,
+             accumulated_volume INTEGER,
+             intraday_volatility REAL,
+             market_checked_at_unix INTEGER,
+             signal_expires_at_unix INTEGER NOT NULL DEFAULT 0,
+             decision_status TEXT NOT NULL DEFAULT 'market_data_pending',
+             block_reason TEXT,
              PRIMARY KEY (day_key, symbol)
          );",
     )?;
     ensure_analysis_columns(&connection)?;
+    ensure_outlook_columns(&connection)?;
     Ok(())
 }
 
@@ -405,11 +422,23 @@ pub fn grouped_events(state: &AppState, limit: usize) -> ApiResult<Vec<NewsEvent
 
 pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
     let connection = open_database(state).map_err(database_error)?;
+    connection
+        .execute(
+            "UPDATE stock_daily_outlooks SET decision_status = 'expired',
+             block_reason = '뉴스 신호의 유효기간이 지났습니다.'
+             WHERE signal_expires_at_unix > 0 AND signal_expires_at_unix <= ?1
+               AND decision_status != 'expired'",
+            [unix_now() as i64],
+        )
+        .map_err(database_error)?;
     let day_key = korea_day_key(unix_now() as i64);
     let mut statement = connection
         .prepare(
             "SELECT day_key, symbol, name, action, confidence, impact_horizon,
-                    reasons_json, event_keys_json, model, generated_at_unix
+                    reasons_json, event_keys_json, model, generated_at_unix,
+                    current_price, previous_change_rate, accumulated_volume,
+                    intraday_volatility, market_checked_at_unix, signal_expires_at_unix,
+                    decision_status, block_reason
              FROM stock_daily_outlooks WHERE day_key = ?1
              ORDER BY confidence DESC, symbol ASC",
         )
@@ -427,6 +456,14 @@ pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
                 event_keys: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
                 model: row.get(8)?,
                 generated_at_unix: row.get(9)?,
+                current_price: row.get(10)?,
+                previous_change_rate: row.get(11)?,
+                accumulated_volume: row.get(12)?,
+                intraday_volatility: row.get(13)?,
+                market_checked_at_unix: row.get(14)?,
+                signal_expires_at_unix: row.get(15)?,
+                decision_status: row.get(16)?,
+                block_reason: row.get(17)?,
             })
         })
         .map_err(database_error)?;
@@ -517,14 +554,20 @@ pub async fn generate_daily_outlooks(state: &AppState) -> ApiResult<Vec<DailySto
             .execute(
                 "INSERT INTO stock_daily_outlooks
                     (day_key, symbol, name, action, confidence, impact_horizon,
-                     reasons_json, event_keys_json, model, generated_at_unix)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    reasons_json, event_keys_json, model, generated_at_unix,
+                    signal_expires_at_unix, decision_status, block_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
                  ON CONFLICT(day_key, symbol) DO UPDATE SET
                     name = excluded.name, action = excluded.action,
                     confidence = excluded.confidence, impact_horizon = excluded.impact_horizon,
                     reasons_json = excluded.reasons_json,
                     event_keys_json = excluded.event_keys_json, model = excluded.model,
-                    generated_at_unix = excluded.generated_at_unix",
+                    generated_at_unix = excluded.generated_at_unix,
+                    current_price = NULL, previous_change_rate = NULL,
+                    accumulated_volume = NULL, intraday_volatility = NULL,
+                    market_checked_at_unix = NULL,
+                    signal_expires_at_unix = excluded.signal_expires_at_unix,
+                    decision_status = excluded.decision_status, block_reason = NULL",
                 params![
                     day_key,
                     outlook.symbol,
@@ -536,12 +579,152 @@ pub async fn generate_daily_outlooks(state: &AppState) -> ApiResult<Vec<DailySto
                     serde_json::to_string(event_keys).map_err(database_error)?,
                     response.model,
                     now,
+                    signal_expires_at(now, &outlook.impact_horizon),
+                    "market_data_pending",
                 ],
             )
             .map_err(database_error)?;
     }
     transaction.commit().map_err(database_error)?;
     daily_outlooks(state)
+}
+
+pub async fn refresh_outlook_market_data(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
+    let outlooks = daily_outlooks(state)?;
+    if outlooks.is_empty() {
+        return Err(api_error(
+            StatusCode::PRECONDITION_FAILED,
+            "no_daily_outlooks",
+            "Generate daily outlooks before combining market data.",
+        ));
+    }
+    for (index, outlook) in outlooks.iter().enumerate() {
+        if index > 0 {
+            sleep(Duration::from_millis(1200)).await;
+        }
+        let checked_at = unix_now() as i64;
+        let result = crate::kis::get_price(state, &outlook.symbol).await;
+        let connection = open_database(state).map_err(database_error)?;
+        match result {
+            Ok(response) => {
+                let snapshot = response
+                    .output
+                    .as_ref()
+                    .map(market_snapshot)
+                    .unwrap_or_default();
+                let (status, reason) = evaluate_outlook_market_state(
+                    &outlook.action,
+                    outlook.signal_expires_at_unix,
+                    checked_at,
+                    snapshot.previous_change_rate,
+                    snapshot.intraday_volatility,
+                );
+                connection
+                    .execute(
+                        "UPDATE stock_daily_outlooks SET current_price = ?1,
+                         previous_change_rate = ?2, accumulated_volume = ?3,
+                         intraday_volatility = ?4, market_checked_at_unix = ?5,
+                         decision_status = ?6, block_reason = ?7
+                         WHERE day_key = ?8 AND symbol = ?9",
+                        params![
+                            snapshot.current_price,
+                            snapshot.previous_change_rate,
+                            snapshot.accumulated_volume,
+                            snapshot.intraday_volatility,
+                            checked_at,
+                            status,
+                            reason,
+                            outlook.day_key,
+                            outlook.symbol,
+                        ],
+                    )
+                    .map_err(database_error)?;
+            }
+            Err((_, Json(error))) => {
+                connection
+                    .execute(
+                        "UPDATE stock_daily_outlooks SET market_checked_at_unix = ?1,
+                         decision_status = 'market_data_unavailable', block_reason = ?2
+                         WHERE day_key = ?3 AND symbol = ?4",
+                        params![checked_at, error.message, outlook.day_key, outlook.symbol],
+                    )
+                    .map_err(database_error)?;
+            }
+        }
+    }
+    daily_outlooks(state)
+}
+
+#[derive(Default)]
+struct MarketSnapshot {
+    current_price: Option<u64>,
+    previous_change_rate: Option<f64>,
+    accumulated_volume: Option<u64>,
+    intraday_volatility: Option<f64>,
+}
+
+fn market_snapshot(output: &Value) -> MarketSnapshot {
+    let current_price = value_u64(output, "stck_prpr");
+    let high = value_u64(output, "stck_hgpr");
+    let low = value_u64(output, "stck_lwpr");
+    MarketSnapshot {
+        current_price,
+        previous_change_rate: value_f64(output, "prdy_ctrt"),
+        accumulated_volume: value_u64(output, "acml_vol"),
+        intraday_volatility: match (high, low, current_price) {
+            (Some(high), Some(low), Some(price)) if price > 0 && high >= low => {
+                Some((high - low) as f64 / price as f64 * 100.0)
+            }
+            _ => None,
+        },
+    }
+}
+
+fn value_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key)?.as_str()?.replace(',', "").parse().ok()
+}
+
+fn value_f64(value: &Value, key: &str) -> Option<f64> {
+    value.get(key)?.as_str()?.replace(',', "").parse().ok()
+}
+
+fn evaluate_outlook_market_state(
+    action: &str,
+    expires_at: i64,
+    now: i64,
+    change_rate: Option<f64>,
+    volatility: Option<f64>,
+) -> (String, Option<String>) {
+    if now >= expires_at {
+        return (
+            "expired".to_string(),
+            Some("뉴스 신호의 유효기간이 지났습니다.".to_string()),
+        );
+    }
+    if action == "buy_candidate" && change_rate.is_some_and(|rate| rate >= 5.0) {
+        return (
+            "blocked".to_string(),
+            Some("전일 대비 5% 이상 상승해 뉴스 매수 후보를 차단했습니다.".to_string()),
+        );
+    }
+    if action == "buy_candidate" && volatility.is_some_and(|rate| rate >= 10.0) {
+        return (
+            "blocked".to_string(),
+            Some("장중 변동성이 10% 이상이라 뉴스 매수 후보를 차단했습니다.".to_string()),
+        );
+    }
+    ("eligible".to_string(), None)
+}
+
+fn signal_expires_at(generated_at: i64, horizon: &str) -> i64 {
+    let lifetime = match horizon {
+        "intraday" => 8 * 3600,
+        "short_term" => 3 * 24 * 3600,
+        "medium_term" => 14 * 24 * 3600,
+        "long_term" => 30 * 24 * 3600,
+        _ => 24 * 3600,
+    };
+    generated_at + lifetime
 }
 
 fn korea_day_key(timestamp: i64) -> i64 {
@@ -1105,6 +1288,45 @@ fn ensure_analysis_columns(connection: &Connection) -> anyhow::Result<()> {
             ))?;
         }
     }
+    connection.execute_batch(
+        "UPDATE stock_daily_outlooks
+         SET signal_expires_at_unix = generated_at_unix + CASE impact_horizon
+             WHEN 'intraday' THEN 28800
+             WHEN 'short_term' THEN 259200
+             WHEN 'medium_term' THEN 1209600
+             WHEN 'long_term' THEN 2592000
+             ELSE 86400 END
+         WHERE signal_expires_at_unix = 0;",
+    )?;
+    Ok(())
+}
+
+fn ensure_outlook_columns(connection: &Connection) -> anyhow::Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(stock_daily_outlooks)")?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    let columns = [
+        ("current_price", "INTEGER"),
+        ("previous_change_rate", "REAL"),
+        ("accumulated_volume", "INTEGER"),
+        ("intraday_volatility", "REAL"),
+        ("market_checked_at_unix", "INTEGER"),
+        ("signal_expires_at_unix", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "decision_status",
+            "TEXT NOT NULL DEFAULT 'market_data_pending'",
+        ),
+        ("block_reason", "TEXT"),
+    ];
+    drop(statement);
+    for (name, definition) in columns {
+        if !existing.contains(name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE stock_daily_outlooks ADD COLUMN {name} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -1265,5 +1487,44 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         assert_ne!(events[0].event_key, events[1].event_key);
+    }
+
+    #[test]
+    fn blocks_overheated_buy_candidate() {
+        let (status, reason) = evaluate_outlook_market_state(
+            "buy_candidate",
+            2_000_000,
+            1_000_000,
+            Some(5.2),
+            Some(3.0),
+        );
+        assert_eq!(status, "blocked");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn expires_stale_news_signal() {
+        let (status, _) = evaluate_outlook_market_state(
+            "buy_candidate",
+            1_000_000,
+            1_000_001,
+            Some(-1.0),
+            Some(2.0),
+        );
+        assert_eq!(status, "expired");
+    }
+
+    #[test]
+    fn calculates_intraday_volatility_from_quote() {
+        let snapshot = market_snapshot(&serde_json::json!({
+            "stck_prpr": "70,000",
+            "prdy_ctrt": "1.25",
+            "acml_vol": "1234567",
+            "stck_hgpr": "72,000",
+            "stck_lwpr": "68,000"
+        }));
+        assert_eq!(snapshot.current_price, Some(70_000));
+        assert_eq!(snapshot.accumulated_volume, Some(1_234_567));
+        assert!((snapshot.intraday_volatility.unwrap_or_default() - 5.714).abs() < 0.001);
     }
 }

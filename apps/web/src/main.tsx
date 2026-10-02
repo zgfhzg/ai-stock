@@ -236,6 +236,14 @@ type DailyStockOutlook = {
   event_keys: string[];
   model: string;
   generated_at_unix: number;
+  current_price?: number | null;
+  previous_change_rate?: number | null;
+  accumulated_volume?: number | null;
+  intraday_volatility?: number | null;
+  market_checked_at_unix?: number | null;
+  signal_expires_at_unix: number;
+  decision_status: "market_data_pending" | "eligible" | "blocked" | "expired" | "market_data_unavailable";
+  block_reason?: string | null;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -402,6 +410,7 @@ function App() {
   const [newsAnalyzing, setNewsAnalyzing] = React.useState(false);
   const [dailyOutlooks, setDailyOutlooks] = React.useState<DailyStockOutlook[]>([]);
   const [dailyOutlooksGenerating, setDailyOutlooksGenerating] = React.useState(false);
+  const [outlookMarketRefreshing, setOutlookMarketRefreshing] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -702,6 +711,15 @@ function App() {
       .then(setDailyOutlooks)
       .catch((error) => setError(error instanceof Error ? error.message : "오늘의 AI 전망 생성에 실패했습니다."))
       .finally(() => setDailyOutlooksGenerating(false));
+  }
+
+  function handleRefreshOutlookMarketData() {
+    setOutlookMarketRefreshing(true);
+    setError(null);
+    fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks/market-data", { method: "POST" })
+      .then(setDailyOutlooks)
+      .catch((error) => setError(error instanceof Error ? error.message : "전망에 가격 정보를 결합하지 못했습니다."))
+      .finally(() => setOutlookMarketRefreshing(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1128,18 +1146,29 @@ function App() {
                   <Bot size={17} />
                   <span>{dailyOutlooksGenerating ? "전망 생성 중" : "오늘 전망"}</span>
                 </button>
+                <button type="button" onClick={handleRefreshOutlookMarketData} disabled={outlookMarketRefreshing || dailyOutlooks.length === 0}>
+                  <RefreshCw size={17} />
+                  <span>{outlookMarketRefreshing ? "가격 확인 중" : "가격 결합"}</span>
+                </button>
               </div>
             </div>
             {dailyOutlooks.length > 0 ? (
               <div className="daily-outlooks" aria-label="오늘의 종목별 AI 전망">
                 {dailyOutlooks.slice(0, 8).map((outlook) => (
-                  <article className={`daily-outlook ${outlook.action}`} key={outlook.symbol}>
+                  <article className={`daily-outlook ${outlook.action} ${outlook.decision_status}`} key={outlook.symbol}>
                     <div>
                       <strong>{outlook.name}</strong>
                       <span>{outlook.symbol} · {formatOutlookAction(outlook.action)} · 신뢰도 {Math.round(outlook.confidence * 100)}%</span>
                     </div>
                     <p>{outlook.reasons.join(" ")}</p>
-                    <small>{formatImpactHorizon(outlook.impact_horizon)} · 이벤트 {outlook.event_keys.length}건 · 주문 미연결</small>
+                    <div className="outlook-market-metrics">
+                      <span>{outlook.current_price != null ? `${outlook.current_price.toLocaleString("ko-KR")}원` : "현재가 대기"}</span>
+                      <span>{formatOutlookRate(outlook.previous_change_rate)}</span>
+                      <span>{outlook.accumulated_volume != null ? `거래량 ${outlook.accumulated_volume.toLocaleString("ko-KR")}` : "거래량 대기"}</span>
+                      <span>{outlook.intraday_volatility != null ? `변동성 ${outlook.intraday_volatility.toFixed(2)}%` : "변동성 대기"}</span>
+                    </div>
+                    <small>{formatImpactHorizon(outlook.impact_horizon)} · {formatOutlookStatus(outlook.decision_status)} · {formatExpiry(outlook.signal_expires_at_unix)}</small>
+                    {outlook.block_reason ? <small className="outlook-block-reason">{outlook.block_reason}</small> : null}
                   </article>
                 ))}
               </div>
@@ -2390,6 +2419,26 @@ function formatOutlookAction(action: DailyStockOutlook["action"]) {
   if (action === "buy_candidate") return "매수 후보";
   if (action === "sell_candidate") return "매도 후보";
   return "관망";
+}
+
+function formatOutlookStatus(status: DailyStockOutlook["decision_status"]) {
+  const labels: Record<DailyStockOutlook["decision_status"], string> = {
+    market_data_pending: "가격 확인 대기",
+    eligible: "조건 통과",
+    blocked: "과열 차단",
+    expired: "신호 만료",
+    market_data_unavailable: "가격 확인 실패",
+  };
+  return labels[status];
+}
+
+function formatOutlookRate(rate?: number | null) {
+  if (rate == null) return "등락률 대기";
+  return `전일 대비 ${rate > 0 ? "+" : ""}${rate.toFixed(2)}%`;
+}
+
+function formatExpiry(timestampUnix: number) {
+  return `유효 ${formatRunTime(timestampUnix)}까지`;
 }
 
 function formatRuleTrigger(trigger: TradingRuleTrigger) {

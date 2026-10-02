@@ -78,6 +78,10 @@ pub fn app_router() -> Router<AppState> {
             "/api/news/daily-outlooks",
             get(news_daily_outlooks).post(generate_news_daily_outlooks),
         )
+        .route(
+            "/api/news/daily-outlooks/market-data",
+            post(refresh_news_outlook_market_data),
+        )
         .route("/api/news/stocks", get(news_stock_groups))
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
@@ -302,6 +306,12 @@ async fn generate_news_daily_outlooks(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<DailyStockOutlook>>> {
     Ok(Json(news::generate_daily_outlooks(&state).await?))
+}
+
+async fn refresh_news_outlook_market_data(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<DailyStockOutlook>>> {
+    Ok(Json(news::refresh_outlook_market_data(&state).await?))
 }
 
 async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {

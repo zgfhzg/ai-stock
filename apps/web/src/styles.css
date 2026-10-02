@@ -1034,11 +1034,33 @@ h2 {
   border-left-color: #b74b45;
 }
 
+.daily-outlook.blocked,
+.daily-outlook.expired {
+  border-left-color: #b74b45;
+  background: #fffafa;
+}
+
 .daily-outlook div,
 .daily-outlook p {
   display: grid;
   gap: 3px;
   margin: 0;
+}
+
+.outlook-market-metrics {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 5px 12px !important;
+}
+
+.outlook-market-metrics span {
+  color: #37423a;
+  font-variant-numeric: tabular-nums;
+}
+
+.outlook-block-reason {
+  color: #a23f39 !important;
+  font-weight: 700;
 }
 
 .daily-outlook span,
