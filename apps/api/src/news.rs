@@ -759,7 +759,7 @@ fn evaluate_outlook_market_state(
             Some("거래가 임시 정지된 종목입니다.".to_string()),
         );
     }
-    if instrument_status_code.is_some_and(|code| code != "00") {
+    if instrument_status_code.is_some_and(|code| !matches!(code, "00" | "55")) {
         return (
             "blocked".to_string(),
             Some("정상 종목 상태가 아니어서 후보에서 제외했습니다.".to_string()),
@@ -1706,5 +1706,41 @@ mod tests {
         );
         assert_eq!(status, "blocked");
         assert!(reason.unwrap_or_default().contains("시장경고"));
+    }
+
+    #[test]
+    fn allows_credit_eligible_instrument_status() {
+        let (status, reason) = evaluate_outlook_market_state(
+            "hold",
+            2_000_000,
+            1_000_000,
+            Some(1.0),
+            Some(2.0),
+            Some(70_000),
+            Some(1_000_000),
+            Some("55"),
+            Some("00"),
+            Some(false),
+        );
+        assert_eq!(status, "eligible");
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn blocks_restricted_instrument_status() {
+        let (status, reason) = evaluate_outlook_market_state(
+            "hold",
+            2_000_000,
+            1_000_000,
+            Some(1.0),
+            Some(2.0),
+            Some(70_000),
+            Some(1_000_000),
+            Some("58"),
+            Some("00"),
+            Some(false),
+        );
+        assert_eq!(status, "blocked");
+        assert!(reason.unwrap_or_default().contains("정상 종목 상태"));
     }
 }
