@@ -204,9 +204,38 @@ type StockNewsGroup = {
   name: string;
   market: string;
   article_count: number;
+  event_count: number;
+  source_count: number;
   latest_published_at_unix: number;
   average_sentiment_score?: number | null;
   articles: NewsArticle[];
+};
+
+type NewsEventGroup = {
+  event_key: string;
+  headline: string;
+  article_count: number;
+  source_count: number;
+  sources: string[];
+  latest_published_at_unix: number;
+  average_sentiment_score?: number | null;
+  max_importance?: number | null;
+  evidence_confidence: number;
+  related_stocks: NewsArticle["related_stocks"];
+  articles: NewsArticle[];
+};
+
+type DailyStockOutlook = {
+  day_key: number;
+  symbol: string;
+  name: string;
+  action: "buy_candidate" | "sell_candidate" | "hold";
+  confidence: number;
+  impact_horizon: string;
+  reasons: string[];
+  event_keys: string[];
+  model: string;
+  generated_at_unix: number;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -365,12 +394,14 @@ function App() {
   const [autoMonitor, setAutoMonitor] = React.useState<AutoMonitorStatus | null>(null);
   const [autoMonitorIntervalSeconds, setAutoMonitorIntervalSeconds] = React.useState(30);
   const [autoMonitorBusy, setAutoMonitorBusy] = React.useState(false);
-  const [news, setNews] = React.useState<NewsArticle[]>([]);
+  const [newsEvents, setNewsEvents] = React.useState<NewsEventGroup[]>([]);
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
   const [lastNewsAnalysisRun, setLastNewsAnalysisRun] = React.useState<NewsAnalysisRun | null>(null);
   const [stockNewsGroups, setStockNewsGroups] = React.useState<StockNewsGroup[]>([]);
   const [newsCollecting, setNewsCollecting] = React.useState(false);
   const [newsAnalyzing, setNewsAnalyzing] = React.useState(false);
+  const [dailyOutlooks, setDailyOutlooks] = React.useState<DailyStockOutlook[]>([]);
+  const [dailyOutlooksGenerating, setDailyOutlooksGenerating] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -623,19 +654,22 @@ function App() {
 
   function loadNews() {
     return Promise.all([
-      fetchJson<NewsArticle[]>("/api/news?limit=20"),
+      fetchJson<NewsEventGroup[]>("/api/news/events"),
       fetchJson<NewsCollectorStatus>("/api/news/status"),
       fetchJson<StockNewsGroup[]>("/api/news/stocks"),
+      fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
     ])
-      .then(([articles, collector, groups]) => {
-        setNews(articles);
+      .then(([events, collector, groups, outlooks]) => {
+        setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
+        setDailyOutlooks(outlooks);
       })
       .catch(() => {
-        setNews([]);
+        setNewsEvents([]);
         setNewsStatus(null);
         setStockNewsGroups([]);
+        setDailyOutlooks([]);
       });
   }
 
@@ -659,6 +693,15 @@ function App() {
       })
       .catch((error) => setError(error instanceof Error ? error.message : "뉴스 AI 분석에 실패했습니다."))
       .finally(() => setNewsAnalyzing(false));
+  }
+
+  function handleGenerateDailyOutlooks() {
+    setDailyOutlooksGenerating(true);
+    setError(null);
+    fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks", { method: "POST" })
+      .then(setDailyOutlooks)
+      .catch((error) => setError(error instanceof Error ? error.message : "오늘의 AI 전망 생성에 실패했습니다."))
+      .finally(() => setDailyOutlooksGenerating(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1081,37 +1124,56 @@ function App() {
                   <Bot size={17} />
                   <span>{newsAnalyzing ? "분석 중" : "AI 분석"}</span>
                 </button>
+                <button type="button" onClick={handleGenerateDailyOutlooks} disabled={dailyOutlooksGenerating || !newsStatus?.analysis_enabled || !newsStatus?.analyzed_count}>
+                  <Bot size={17} />
+                  <span>{dailyOutlooksGenerating ? "전망 생성 중" : "오늘 전망"}</span>
+                </button>
               </div>
             </div>
+            {dailyOutlooks.length > 0 ? (
+              <div className="daily-outlooks" aria-label="오늘의 종목별 AI 전망">
+                {dailyOutlooks.slice(0, 8).map((outlook) => (
+                  <article className={`daily-outlook ${outlook.action}`} key={outlook.symbol}>
+                    <div>
+                      <strong>{outlook.name}</strong>
+                      <span>{outlook.symbol} · {formatOutlookAction(outlook.action)} · 신뢰도 {Math.round(outlook.confidence * 100)}%</span>
+                    </div>
+                    <p>{outlook.reasons.join(" ")}</p>
+                    <small>{formatImpactHorizon(outlook.impact_horizon)} · 이벤트 {outlook.event_keys.length}건 · 주문 미연결</small>
+                  </article>
+                ))}
+              </div>
+            ) : null}
             {stockNewsGroups.length > 0 ? (
               <div className="stock-news-groups" aria-label="종목별 관련 뉴스">
                 {stockNewsGroups.slice(0, 6).map((group) => (
                   <div className="stock-news-group" key={group.symbol}>
                     <strong>{group.name}</strong>
-                    <span>{group.symbol} · {group.article_count}건 · {formatAverageSentiment(group.average_sentiment_score)}</span>
+                    <span>{group.symbol} · 이벤트 {group.event_count}건 · 출처 {group.source_count}곳 · {formatAverageSentiment(group.average_sentiment_score)}</span>
                   </div>
                 ))}
               </div>
             ) : null}
-            {news.length > 0 ? (
+            {newsEvents.length > 0 ? (
               <div className="news-list">
-                {news.slice(0, 10).map((article) => (
-                  <a className="news-row" href={article.url} key={article.id} rel="noreferrer" target="_blank">
+                {newsEvents.slice(0, 10).map((event) => (
+                  <a className="news-row" href={event.articles[0]?.url} key={event.event_key} rel="noreferrer" target="_blank">
                     <div>
-                      <strong>{article.title}</strong>
-                      <span>{article.source} · {formatRunTime(article.published_at_unix)} · {formatNewsAnalysisStatus(article)}</span>
+                      <strong>{event.headline}</strong>
+                      <span>{event.sources.join(", ")} · {formatRunTime(event.latest_published_at_unix)}</span>
+                      <small>기사 {event.article_count}건 · 출처 {event.source_count}곳 · 근거 신뢰도 {Math.round(event.evidence_confidence * 100)}%</small>
                     </div>
                     <div className="news-analysis-copy">
-                      <span>{article.ai_summary || article.summary || "AI 분석을 기다리고 있습니다."}</span>
-                      {article.analysis_status === "analyzed" ? (
-                        <small className={`news-sentiment ${article.sentiment ?? "neutral"}`}>
-                          {formatNewsSentiment(article.sentiment)} · 중요도 {article.importance ?? 1}/5 · {formatImpactHorizon(article.impact_horizon)}
+                      <span>{event.articles[0]?.ai_summary || event.articles[0]?.summary || "AI 분석을 기다리고 있습니다."}</span>
+                      {event.average_sentiment_score != null ? (
+                        <small className={`news-sentiment ${sentimentClass(event.average_sentiment_score)}`}>
+                          이벤트 감성 {formatAverageSentiment(event.average_sentiment_score)} · 최고 중요도 {event.max_importance ?? 1}/5
                         </small>
                       ) : null}
-                      {article.related_stocks.length > 0 ? (
+                      {event.related_stocks.length > 0 ? (
                         <div className="news-stock-tags">
-                          {article.related_stocks.map((stock) => (
-                            <small key={`${article.id}-${stock.symbol || stock.name}`}>{stock.name} {stock.symbol}</small>
+                          {event.related_stocks.map((stock) => (
+                            <small key={`${event.event_key}-${stock.symbol || stock.name}`}>{stock.name} {stock.symbol}</small>
                           ))}
                         </div>
                       ) : null}
@@ -2316,6 +2378,18 @@ function formatAverageSentiment(score?: number | null) {
   if (score >= 0.25) return "긍정 우세";
   if (score <= -0.25) return "부정 우세";
   return "중립";
+}
+
+function sentimentClass(score: number) {
+  if (score >= 0.25) return "positive";
+  if (score <= -0.25) return "negative";
+  return "neutral";
+}
+
+function formatOutlookAction(action: DailyStockOutlook["action"]) {
+  if (action === "buy_candidate") return "매수 후보";
+  if (action === "sell_candidate") return "매도 후보";
+  return "관망";
 }
 
 function formatRuleTrigger(trigger: TradingRuleTrigger) {

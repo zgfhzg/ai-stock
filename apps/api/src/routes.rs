@@ -15,7 +15,10 @@ use crate::{
     },
     error::ApiResult,
     kis::{self, KisConfigStatus},
-    news::{self, NewsAnalysisRun, NewsArticle, NewsCollectorStatus, StockNewsGroup},
+    news::{
+        self, DailyStockOutlook, NewsAnalysisRun, NewsArticle, NewsCollectorStatus, NewsEventGroup,
+        StockNewsGroup,
+    },
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -70,6 +73,11 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/watchlist", get(watchlist).post(add_watchlist_item))
         .route("/api/watchlist/:symbol", delete(remove_watchlist_item))
         .route("/api/news", get(news_list))
+        .route("/api/news/events", get(news_event_groups))
+        .route(
+            "/api/news/daily-outlooks",
+            get(news_daily_outlooks).post(generate_news_daily_outlooks),
+        )
         .route("/api/news/stocks", get(news_stock_groups))
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
@@ -278,6 +286,22 @@ async fn news_list(
 
 async fn news_stock_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<StockNewsGroup>>> {
     Ok(Json(news::grouped_by_stock(&state, 100)?))
+}
+
+async fn news_event_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<NewsEventGroup>>> {
+    Ok(Json(news::grouped_events(&state, 100)?))
+}
+
+async fn news_daily_outlooks(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<DailyStockOutlook>>> {
+    Ok(Json(news::daily_outlooks(&state)?))
+}
+
+async fn generate_news_daily_outlooks(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<DailyStockOutlook>>> {
+    Ok(Json(news::generate_daily_outlooks(&state).await?))
 }
 
 async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {

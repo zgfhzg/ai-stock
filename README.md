@@ -64,6 +64,10 @@ make up
 - `POST /api/watchlist`: 관심종목 추가, 본문 예: `{ "query": "삼성전자" }`
 - `DELETE /api/watchlist/{symbol}`: 관심종목 삭제
 - `GET /api/news`: 최근 수집 뉴스 조회
+- `GET /api/news/events`: 유사 기사들을 사건 단위로 통합한 뉴스 이벤트 조회
+- `GET /api/news/stocks`: 종목별 뉴스 이벤트, 기사 수, 출처 수 집계
+- `GET /api/news/daily-outlooks`: 오늘 저장된 종목별 AI 전망 조회
+- `POST /api/news/daily-outlooks`: 최근 24시간 뉴스 이벤트로 오늘의 AI 전망 생성
 - `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
 - `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/news/analyze`: 미분석 뉴스 최대 한 배치를 AI로 분석
@@ -85,6 +89,10 @@ make up
 뉴스 수집기는 기본 24시간 간격으로 실행되며 원문과 이미지는 저장하지 않습니다. 제목, 링크, 출처, 발행시각과 최대 500자의 피드 요약만 SQLite에 저장합니다. URL 기준 중복 제거, 하루 300건 제한, 90일 보관, DB 최대 1GB가 기본값이며 `.env`의 `NEWS_COLLECTION_INTERVAL_HOURS`, `NEWS_DAILY_LIMIT`, `NEWS_RETENTION_DAYS`, `NEWS_MAX_DATABASE_BYTES`로 조정할 수 있습니다.
 
 수집 직후 Strategy 서비스는 OpenAI Structured Outputs로 뉴스 요약, 감성, 중요도, 영향 기간과 관련 종목을 분석합니다. 모델 호출 실패나 불완전 응답은 주문 신호로 사용하지 않고 실패 상태로 기록하며 최대 3회까지만 재시도합니다. 모델과 배치 크기는 `OPENAI_NEWS_MODEL`, `NEWS_ANALYSIS_BATCH_SIZE`로 설정합니다.
+
+분석된 뉴스는 제목 핵심어, 관련 종목, 72시간 발행 구간을 기준으로 같은 사건끼리 묶습니다. 이벤트별 기사 수와 고유 출처 수를 분리하고, 종목별 감성은 기사 개수가 아니라 이벤트별 평균을 사용해 반복 보도가 신호를 부풀리지 않도록 합니다. 이벤트의 근거 신뢰도는 출처 다양성, 분석 완료율, 최고 중요도를 반영하며 매매 성공 확률을 의미하지 않습니다.
+
+종목별 일일 AI 전망은 최근 24시간의 확인된 종목 뉴스 이벤트를 종합해 매수 후보, 매도 후보, 관망 중 하나와 신뢰도, 영향 기간, 핵심 근거를 생성합니다. 결과는 한국 시간 날짜별로 SQLite에 저장되며 화면 표시 전용입니다. 이 API는 주문 또는 자동매매 실행 코드를 호출하지 않습니다.
 
 조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 감시는 백엔드 API 서버에서 실행되므로 브라우저를 닫아도 API 서버가 살아 있으면 선택한 주기마다 규칙을 반복 점검합니다. 감시 설정은 파일로 저장되어 API 서버가 재시작돼도 이전에 켜져 있던 감시를 자동 복구합니다. `모의 주문` 토글은 기본 OFF이며, 켜더라도 `AUTO_TRADE_MODE=paper_auto`일 때만 조건 충족 시 모의 주문을 시도합니다. 자동주문 실행 시에는 AI 판단 방향이 규칙 주문 방향과 같고 신뢰도가 `AUTO_MIN_CONFIDENCE` 이상이어야 합니다.
 같은 규칙이 반복 발동하는 것을 막기 위해 기본 10분 쿨다운을 적용하며, `AUTO_RULE_COOLDOWN_SECONDS`로 조정할 수 있습니다. 자동주문은 규칙별 하루 1회로 제한하고, 종목별 일일 자동주문 금액은 `MAX_DAILY_AUTO_ORDER_AMOUNT_KRW_PER_SYMBOL`로 제한합니다.

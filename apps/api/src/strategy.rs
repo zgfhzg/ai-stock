@@ -74,6 +74,44 @@ pub struct NewsAnalysisUsage {
     pub total_tokens: Option<u64>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct StockEventInput {
+    pub event_key: String,
+    pub headline: String,
+    pub sentiment_score: Option<f64>,
+    pub importance: Option<u8>,
+    pub impact_horizon: Option<String>,
+    pub source_count: usize,
+    pub evidence_confidence: f64,
+}
+
+#[derive(Serialize)]
+pub struct StockOutlookInput {
+    pub symbol: String,
+    pub name: String,
+    pub events: Vec<StockEventInput>,
+}
+
+#[derive(Serialize)]
+pub struct DailyOutlookRequest {
+    pub stocks: Vec<StockOutlookInput>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct DailyStockOutlook {
+    pub symbol: String,
+    pub action: String,
+    pub confidence: f64,
+    pub impact_horizon: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DailyOutlookResponse {
+    pub model: String,
+    pub outlooks: Vec<DailyStockOutlook>,
+}
+
 pub async fn health(state: &AppState) -> anyhow::Result<StrategyHealth> {
     let url = format!("{}/health", state.config.strategy_url);
     let response = state.http.get(url).send().await?.error_for_status()?;
@@ -115,6 +153,21 @@ pub async fn analyze_news(
         .await?
         .error_for_status()?;
     Ok(response.json::<NewsAnalysisResponse>().await?)
+}
+
+pub async fn generate_daily_outlooks(
+    state: &AppState,
+    stocks: Vec<StockOutlookInput>,
+) -> anyhow::Result<DailyOutlookResponse> {
+    let url = format!("{}/news/daily-outlooks", state.config.strategy_url);
+    let response = state
+        .http
+        .post(url)
+        .json(&DailyOutlookRequest { stocks })
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(response.json::<DailyOutlookResponse>().await?)
 }
 
 fn fallback_proposal(symbol: &str) -> ProposalResponse {

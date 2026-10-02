@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::Path,
     time::Instant,
@@ -63,9 +63,40 @@ pub struct StockNewsGroup {
     pub name: String,
     pub market: String,
     pub article_count: usize,
+    pub event_count: usize,
+    pub source_count: usize,
     pub latest_published_at_unix: i64,
     pub average_sentiment_score: Option<f64>,
     pub articles: Vec<NewsArticle>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct NewsEventGroup {
+    pub event_key: String,
+    pub headline: String,
+    pub article_count: usize,
+    pub source_count: usize,
+    pub sources: Vec<String>,
+    pub latest_published_at_unix: i64,
+    pub average_sentiment_score: Option<f64>,
+    pub max_importance: Option<u8>,
+    pub evidence_confidence: f64,
+    pub related_stocks: Vec<Value>,
+    pub articles: Vec<NewsArticle>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct DailyStockOutlook {
+    pub day_key: i64,
+    pub symbol: String,
+    pub name: String,
+    pub action: String,
+    pub confidence: f64,
+    pub impact_horizon: String,
+    pub reasons: Vec<String>,
+    pub event_keys: Vec<String>,
+    pub model: String,
+    pub generated_at_unix: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -153,7 +184,20 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              analysis_attempts INTEGER NOT NULL DEFAULT 0
          );
          CREATE INDEX IF NOT EXISTS idx_news_published
-             ON news_articles(published_at_unix DESC);",
+             ON news_articles(published_at_unix DESC);
+         CREATE TABLE IF NOT EXISTS stock_daily_outlooks (
+             day_key INTEGER NOT NULL,
+             symbol TEXT NOT NULL,
+             name TEXT NOT NULL,
+             action TEXT NOT NULL,
+             confidence REAL NOT NULL,
+             impact_horizon TEXT NOT NULL,
+             reasons_json TEXT NOT NULL,
+             event_keys_json TEXT NOT NULL,
+             model TEXT NOT NULL,
+             generated_at_unix INTEGER NOT NULL,
+             PRIMARY KEY (day_key, symbol)
+         );",
     )?;
     ensure_analysis_columns(&connection)?;
     Ok(())
@@ -278,12 +322,13 @@ pub fn list(state: &AppState, limit: usize) -> ApiResult<Vec<NewsArticle>> {
 }
 
 pub fn grouped_by_stock(state: &AppState, limit: usize) -> ApiResult<Vec<StockNewsGroup>> {
-    let articles = list(state, limit)?;
+    let events = grouped_events(state, limit)?;
     let mut groups = BTreeMap::<String, StockNewsGroup>::new();
     let mut sentiment_sums = BTreeMap::<String, (f64, usize)>::new();
+    let mut source_names = BTreeMap::<String, BTreeSet<String>>::new();
 
-    for article in articles {
-        for related_stock in &article.related_stocks {
+    for event in events {
+        for related_stock in &event.related_stocks {
             let Some(symbol) = related_stock.get("symbol").and_then(Value::as_str) else {
                 continue;
             };
@@ -297,22 +342,34 @@ pub fn grouped_by_stock(state: &AppState, limit: usize) -> ApiResult<Vec<StockNe
                 .get("market")
                 .and_then(Value::as_str)
                 .unwrap_or("KRX");
-            let group = groups.entry(symbol.to_string()).or_insert_with(|| StockNewsGroup {
-                symbol: symbol.to_string(),
-                name: name.to_string(),
-                market: market.to_string(),
-                article_count: 0,
-                latest_published_at_unix: article.published_at_unix,
-                average_sentiment_score: None,
-                articles: Vec::new(),
-            });
-            group.article_count += 1;
-            group.latest_published_at_unix =
-                group.latest_published_at_unix.max(article.published_at_unix);
-            if group.articles.len() < 5 {
-                group.articles.push(article.clone());
+            let group = groups
+                .entry(symbol.to_string())
+                .or_insert_with(|| StockNewsGroup {
+                    symbol: symbol.to_string(),
+                    name: name.to_string(),
+                    market: market.to_string(),
+                    article_count: 0,
+                    event_count: 0,
+                    source_count: 0,
+                    latest_published_at_unix: event.latest_published_at_unix,
+                    average_sentiment_score: None,
+                    articles: Vec::new(),
+                });
+            group.article_count += event.article_count;
+            group.event_count += 1;
+            group.latest_published_at_unix = group
+                .latest_published_at_unix
+                .max(event.latest_published_at_unix);
+            for article in &event.articles {
+                if group.articles.len() < 5 {
+                    group.articles.push(article.clone());
+                }
             }
-            if let Some(score) = article.sentiment_score {
+            source_names
+                .entry(symbol.to_string())
+                .or_default()
+                .extend(event.sources.iter().cloned());
+            if let Some(score) = event.average_sentiment_score {
                 let entry = sentiment_sums.entry(symbol.to_string()).or_insert((0.0, 0));
                 entry.0 += score;
                 entry.1 += 1;
@@ -325,16 +382,388 @@ pub fn grouped_by_stock(state: &AppState, limit: usize) -> ApiResult<Vec<StockNe
             group.average_sentiment_score = Some(sum / count as f64);
         }
     }
+    for (symbol, sources) in source_names {
+        if let Some(group) = groups.get_mut(&symbol) {
+            group.source_count = sources.len();
+        }
+    }
 
     let mut groups = groups.into_values().collect::<Vec<_>>();
     groups.sort_by(|left, right| {
-        right
-            .article_count
-            .cmp(&left.article_count)
-            .then_with(|| right.latest_published_at_unix.cmp(&left.latest_published_at_unix))
+        right.event_count.cmp(&left.event_count).then_with(|| {
+            right
+                .latest_published_at_unix
+                .cmp(&left.latest_published_at_unix)
+        })
     });
     Ok(groups)
 }
+
+pub fn grouped_events(state: &AppState, limit: usize) -> ApiResult<Vec<NewsEventGroup>> {
+    Ok(cluster_articles(list(state, limit)?))
+}
+
+pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
+    let connection = open_database(state).map_err(database_error)?;
+    let day_key = korea_day_key(unix_now() as i64);
+    let mut statement = connection
+        .prepare(
+            "SELECT day_key, symbol, name, action, confidence, impact_horizon,
+                    reasons_json, event_keys_json, model, generated_at_unix
+             FROM stock_daily_outlooks WHERE day_key = ?1
+             ORDER BY confidence DESC, symbol ASC",
+        )
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map([day_key], |row| {
+            Ok(DailyStockOutlook {
+                day_key: row.get(0)?,
+                symbol: row.get(1)?,
+                name: row.get(2)?,
+                action: row.get(3)?,
+                confidence: row.get(4)?,
+                impact_horizon: row.get(5)?,
+                reasons: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                event_keys: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+                model: row.get(8)?,
+                generated_at_unix: row.get(9)?,
+            })
+        })
+        .map_err(database_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+}
+
+pub async fn generate_daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
+    if !state.config.news_analysis_enabled {
+        return Err(api_error(
+            StatusCode::PRECONDITION_FAILED,
+            "news_analysis_disabled",
+            "NEWS_ANALYSIS_ENABLED must be true.",
+        ));
+    }
+    let cutoff = unix_now() as i64 - 24 * 3600;
+    let mut stocks_by_symbol = BTreeMap::<String, strategy::StockOutlookInput>::new();
+    for event in grouped_events(state, 100)?
+        .into_iter()
+        .filter(|event| event.latest_published_at_unix >= cutoff)
+    {
+        for stock in &event.related_stocks {
+            let Some(symbol) = stock.get("symbol").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(name) = stock.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let input = stocks_by_symbol
+                .entry(symbol.to_string())
+                .or_insert_with(|| strategy::StockOutlookInput {
+                    symbol: symbol.to_string(),
+                    name: name.to_string(),
+                    events: Vec::new(),
+                });
+            if input.events.len() < 20 {
+                input.events.push(strategy::StockEventInput {
+                    event_key: event.event_key.clone(),
+                    headline: event.headline.clone(),
+                    sentiment_score: event.average_sentiment_score,
+                    importance: event.max_importance,
+                    impact_horizon: event
+                        .articles
+                        .iter()
+                        .filter_map(|article| article.impact_horizon.clone())
+                        .next(),
+                    source_count: event.source_count,
+                    evidence_confidence: event.evidence_confidence,
+                });
+            }
+        }
+    }
+    let inputs = stocks_by_symbol.into_values().take(20).collect::<Vec<_>>();
+    if inputs.is_empty() {
+        return Err(api_error(
+            StatusCode::PRECONDITION_FAILED,
+            "no_daily_news_events",
+            "No confirmed stock news events were published in the last 24 hours.",
+        ));
+    }
+    let event_keys_by_symbol = inputs
+        .iter()
+        .map(|stock| {
+            (
+                stock.symbol.clone(),
+                (
+                    stock.name.clone(),
+                    stock
+                        .events
+                        .iter()
+                        .map(|event| event.event_key.clone())
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let response = strategy::generate_daily_outlooks(state, inputs)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "daily_outlook_failed", error))?;
+    let now = unix_now() as i64;
+    let day_key = korea_day_key(now);
+    let mut connection = open_database(state).map_err(database_error)?;
+    let transaction = connection.transaction().map_err(database_error)?;
+    for outlook in response.outlooks {
+        let Some((name, event_keys)) = event_keys_by_symbol.get(&outlook.symbol) else {
+            continue;
+        };
+        transaction
+            .execute(
+                "INSERT INTO stock_daily_outlooks
+                    (day_key, symbol, name, action, confidence, impact_horizon,
+                     reasons_json, event_keys_json, model, generated_at_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(day_key, symbol) DO UPDATE SET
+                    name = excluded.name, action = excluded.action,
+                    confidence = excluded.confidence, impact_horizon = excluded.impact_horizon,
+                    reasons_json = excluded.reasons_json,
+                    event_keys_json = excluded.event_keys_json, model = excluded.model,
+                    generated_at_unix = excluded.generated_at_unix",
+                params![
+                    day_key,
+                    outlook.symbol,
+                    name,
+                    outlook.action,
+                    outlook.confidence,
+                    outlook.impact_horizon,
+                    serde_json::to_string(&outlook.reasons).map_err(database_error)?,
+                    serde_json::to_string(event_keys).map_err(database_error)?,
+                    response.model,
+                    now,
+                ],
+            )
+            .map_err(database_error)?;
+    }
+    transaction.commit().map_err(database_error)?;
+    daily_outlooks(state)
+}
+
+fn korea_day_key(timestamp: i64) -> i64 {
+    (timestamp + 9 * 3600).div_euclid(24 * 3600)
+}
+
+fn cluster_articles(articles: Vec<NewsArticle>) -> Vec<NewsEventGroup> {
+    struct EventCandidate {
+        tokens: HashSet<String>,
+        stock_symbols: HashSet<String>,
+        articles: Vec<NewsArticle>,
+    }
+
+    let mut candidates = Vec::<EventCandidate>::new();
+    for article in articles {
+        let tokens = event_tokens(&article.title);
+        let stock_symbols = article_stock_symbols(&article);
+        let matching_index = candidates.iter().position(|candidate| {
+            let latest = candidate
+                .articles
+                .first()
+                .map(|item| item.published_at_unix)
+                .unwrap_or(article.published_at_unix);
+            latest.abs_diff(article.published_at_unix) <= 72 * 3600
+                && is_same_event(
+                    &tokens,
+                    &stock_symbols,
+                    &candidate.tokens,
+                    &candidate.stock_symbols,
+                )
+        });
+
+        if let Some(index) = matching_index {
+            candidates[index].tokens.extend(tokens);
+            candidates[index].stock_symbols.extend(stock_symbols);
+            candidates[index].articles.push(article);
+        } else {
+            candidates.push(EventCandidate {
+                tokens,
+                stock_symbols,
+                articles: vec![article],
+            });
+        }
+    }
+
+    candidates
+        .into_iter()
+        .map(|candidate| build_event_group(candidate.articles))
+        .collect()
+}
+
+fn build_event_group(articles: Vec<NewsArticle>) -> NewsEventGroup {
+    let headline = articles
+        .first()
+        .map(|article| article.title.clone())
+        .unwrap_or_default();
+    let sources = articles
+        .iter()
+        .map(|article| article.source.trim().to_string())
+        .filter(|source| !source.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let sentiment_scores = articles
+        .iter()
+        .filter_map(|article| article.sentiment_score)
+        .collect::<Vec<_>>();
+    let analyzed_count = articles
+        .iter()
+        .filter(|article| article.analysis_status == "analyzed")
+        .count();
+    let max_importance = articles
+        .iter()
+        .filter_map(|article| article.importance)
+        .max();
+    let mut related_by_symbol = BTreeMap::<String, Value>::new();
+    for article in &articles {
+        for stock in &article.related_stocks {
+            if let Some(symbol) = stock.get("symbol").and_then(Value::as_str) {
+                if is_korean_stock_symbol(symbol) {
+                    related_by_symbol
+                        .entry(symbol.to_string())
+                        .or_insert_with(|| stock.clone());
+                }
+            }
+        }
+    }
+    let source_count = sources.len();
+    let evidence_confidence =
+        event_evidence_confidence(source_count, articles.len(), analyzed_count, max_importance);
+    let latest_published_at_unix = articles
+        .iter()
+        .map(|article| article.published_at_unix)
+        .max()
+        .unwrap_or_default();
+    let event_identity = format!(
+        "{}|{}",
+        normalize_event_title(&headline),
+        latest_published_at_unix.div_euclid(72 * 3600)
+    );
+
+    NewsEventGroup {
+        event_key: format!("evt-{:016x}", fnv1a64(&event_identity)),
+        headline,
+        article_count: articles.len(),
+        source_count,
+        sources,
+        latest_published_at_unix,
+        average_sentiment_score: (!sentiment_scores.is_empty())
+            .then(|| sentiment_scores.iter().sum::<f64>() / sentiment_scores.len() as f64),
+        max_importance,
+        evidence_confidence,
+        related_stocks: related_by_symbol.into_values().collect(),
+        articles,
+    }
+}
+
+fn is_same_event(
+    left_tokens: &HashSet<String>,
+    left_stocks: &HashSet<String>,
+    right_tokens: &HashSet<String>,
+    right_stocks: &HashSet<String>,
+) -> bool {
+    let common = left_tokens.intersection(right_tokens).count();
+    if common < 2 {
+        return false;
+    }
+    let union = left_tokens.union(right_tokens).count();
+    let similarity = common as f64 / union.max(1) as f64;
+    let shares_stock = left_stocks
+        .iter()
+        .any(|symbol| right_stocks.contains(symbol));
+    similarity >= 0.6 || (shares_stock && similarity >= 0.4)
+}
+
+fn article_stock_symbols(article: &NewsArticle) -> HashSet<String> {
+    article
+        .related_stocks
+        .iter()
+        .filter_map(|stock| stock.get("symbol").and_then(Value::as_str))
+        .filter(|symbol| is_korean_stock_symbol(symbol))
+        .map(str::to_string)
+        .collect()
+}
+
+fn event_tokens(title: &str) -> HashSet<String> {
+    normalize_event_title(title)
+        .split_whitespace()
+        .filter(|token| token.chars().count() >= 2)
+        .filter(|token| !EVENT_STOP_WORDS.contains(token))
+        .map(str::to_string)
+        .collect()
+}
+
+fn normalize_event_title(title: &str) -> String {
+    let without_source = title
+        .rsplit_once(" - ")
+        .map(|(title, _)| title)
+        .unwrap_or(title);
+    let mut normalized = String::with_capacity(without_source.len());
+    let mut bracket_depth = 0_u8;
+    for character in without_source.chars().flat_map(char::to_lowercase) {
+        match character {
+            '[' | '(' | '<' | '【' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' | ')' | '>' | '】' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if bracket_depth > 0 => {}
+            _ if character.is_alphanumeric() || ('가'..='힣').contains(&character) => {
+                normalized.push(character)
+            }
+            _ => normalized.push(' '),
+        }
+    }
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn event_evidence_confidence(
+    source_count: usize,
+    article_count: usize,
+    analyzed_count: usize,
+    max_importance: Option<u8>,
+) -> f64 {
+    let source_score = match source_count {
+        0 => 0.2,
+        1 => 0.45,
+        2 => 0.65,
+        _ => 0.8,
+    };
+    let analysis_score = if article_count == 0 {
+        0.0
+    } else {
+        analyzed_count as f64 / article_count as f64 * 0.1
+    };
+    let importance_score = if max_importance.unwrap_or_default() >= 4 {
+        0.1
+    } else {
+        0.0
+    };
+    (source_score + analysis_score + importance_score).min(1.0)
+}
+
+fn fnv1a64(value: &str) -> u64 {
+    value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+}
+
+const EVENT_STOP_WORDS: &[&str] = &[
+    "관련",
+    "대한",
+    "통해",
+    "위한",
+    "오늘",
+    "단독",
+    "속보",
+    "종합",
+    "뉴스",
+    "코스피",
+    "코스닥",
+];
 
 fn is_korean_stock_symbol(value: &str) -> bool {
     value.len() == 6 && value.chars().all(|char| char.is_ascii_digit())
@@ -398,7 +827,10 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
                     .map_err(database_error)?;
             }
             let input_tokens = response.usage.as_ref().and_then(|usage| usage.input_tokens);
-            let output_tokens = response.usage.as_ref().and_then(|usage| usage.output_tokens);
+            let output_tokens = response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.output_tokens);
             let total_tokens = response.usage.as_ref().and_then(|usage| usage.total_tokens);
             Ok(NewsAnalysisRun {
                 requested,
@@ -459,8 +891,7 @@ fn estimate_news_analysis_cost(
         _ => return None,
     };
     Some(
-        (input_tokens? as f64 * input_per_million
-            + output_tokens? as f64 * output_per_million)
+        (input_tokens? as f64 * input_per_million + output_tokens? as f64 * output_per_million)
             / 1_000_000.0,
     )
 }
@@ -721,11 +1152,118 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_text;
+    use super::*;
+
+    fn article(
+        id: i64,
+        title: &str,
+        source: &str,
+        published_at_unix: i64,
+        symbol: Option<&str>,
+    ) -> NewsArticle {
+        NewsArticle {
+            id,
+            title: title.to_string(),
+            url: format!("https://example.com/{id}"),
+            source: source.to_string(),
+            published_at_unix,
+            collected_at_unix: published_at_unix,
+            summary: None,
+            analysis_status: "analyzed".to_string(),
+            ai_summary: None,
+            sentiment: Some("positive".to_string()),
+            sentiment_score: Some(0.6),
+            importance: Some(4),
+            impact_horizon: Some("short_term".to_string()),
+            related_stocks: symbol
+                .map(|symbol| {
+                    vec![serde_json::json!({
+                        "symbol": symbol,
+                        "name": "삼성전자",
+                        "market": "KOSPI"
+                    })]
+                })
+                .unwrap_or_default(),
+            rationale: None,
+            analysis_model: None,
+            analyzed_at_unix: Some(published_at_unix),
+            analysis_error: None,
+        }
+    }
 
     #[test]
     fn removes_markup_and_limits_text() {
         assert_eq!(clean_text("<b>증시</b> 상승 소식", 6), "증시 상승");
         assert_eq!(clean_text("증시&nbsp;&amp; 환율", 30), "증시 & 환율");
+    }
+
+    #[test]
+    fn groups_similar_articles_from_multiple_sources() {
+        let events = cluster_articles(vec![
+            article(
+                1,
+                "삼성전자 HBM 공급 확대 기대감에 주가 상승 - 연합뉴스",
+                "연합뉴스",
+                1_000_000,
+                Some("005930"),
+            ),
+            article(
+                2,
+                "삼성전자 HBM 공급 확대 기대감 주가 상승 - 한국경제",
+                "한국경제",
+                999_000,
+                Some("005930"),
+            ),
+        ]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].article_count, 2);
+        assert_eq!(events[0].source_count, 2);
+        assert!(events[0].evidence_confidence > 0.7);
+    }
+
+    #[test]
+    fn keeps_distinct_events_for_same_stock_separate() {
+        let events = cluster_articles(vec![
+            article(
+                1,
+                "삼성전자 HBM 공급 확대 기대감에 주가 상승",
+                "연합뉴스",
+                1_000_000,
+                Some("005930"),
+            ),
+            article(
+                2,
+                "삼성전자 노조 임금 협상 결렬 파업 예고",
+                "한국경제",
+                999_000,
+                Some("005930"),
+            ),
+        ]);
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn does_not_group_articles_outside_event_window() {
+        let events = cluster_articles(vec![
+            article(
+                1,
+                "삼성전자 HBM 공급 확대 기대감에 주가 상승",
+                "연합뉴스",
+                1_000_000,
+                Some("005930"),
+            ),
+            article(
+                2,
+                "삼성전자 HBM 공급 확대 기대감 주가 상승",
+                "한국경제",
+                1_000_000 - 73 * 3600,
+                Some("005930"),
+            ),
+        ]);
+
+        assert_eq!(events.len(), 2);
+        assert_ne!(events[0].event_key, events[1].event_key);
     }
 }

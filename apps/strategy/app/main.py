@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app.news_analysis import NewsAnalysisRequest, NewsAnalysisResponse, analyze_news
+from app.daily_outlook import DailyOutlookRequest, DailyOutlookResponse, generate_daily_outlooks
 
 
 app = FastAPI(title="AI Stock Strategy")
@@ -112,3 +113,8 @@ def create_proposal(request: ProposalRequest) -> ProposalResponse:
 @app.post("/news/analyze")
 def create_news_analysis(request: NewsAnalysisRequest) -> NewsAnalysisResponse:
     return analyze_news(request)
+
+
+@app.post("/news/daily-outlooks")
+def create_daily_outlooks(request: DailyOutlookRequest) -> DailyOutlookResponse:
+    return generate_daily_outlooks(request)

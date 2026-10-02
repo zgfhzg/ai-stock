@@ -1007,6 +1007,52 @@ h2 {
   margin-bottom: 12px;
 }
 
+.daily-outlooks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.daily-outlook {
+  min-height: 112px;
+  border: 1px solid #dedbd2;
+  border-left: 4px solid #7a827c;
+  border-radius: 8px;
+  padding: 11px 12px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  background: #fff;
+}
+
+.daily-outlook.buy_candidate {
+  border-left-color: #2f7b52;
+}
+
+.daily-outlook.sell_candidate {
+  border-left-color: #b74b45;
+}
+
+.daily-outlook div,
+.daily-outlook p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.daily-outlook span,
+.daily-outlook small {
+  color: #657066;
+  font-size: 12px;
+}
+
+.daily-outlook p {
+  color: #37423a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .stock-news-group {
   min-height: 58px;
   border: 1px solid #ece8df;
