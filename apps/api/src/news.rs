@@ -105,6 +105,20 @@ pub struct DailyStockOutlook {
     pub signal_expires_at_unix: i64,
     pub decision_status: String,
     pub block_reason: Option<String>,
+    pub instrument_status_code: Option<String>,
+    pub market_warning_code: Option<String>,
+    pub temporary_stop: Option<bool>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AiStockCandidate {
+    pub symbol: String,
+    pub name: String,
+    pub market: String,
+    pub is_watchlisted: bool,
+    pub candidate_status: String,
+    pub exclusion_reasons: Vec<String>,
+    pub outlook: DailyStockOutlook,
 }
 
 #[derive(Clone, Serialize)]
@@ -212,6 +226,9 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              signal_expires_at_unix INTEGER NOT NULL DEFAULT 0,
              decision_status TEXT NOT NULL DEFAULT 'market_data_pending',
              block_reason TEXT,
+             instrument_status_code TEXT,
+             market_warning_code TEXT,
+             temporary_stop INTEGER,
              PRIMARY KEY (day_key, symbol)
          );",
     )?;
@@ -438,7 +455,8 @@ pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
                     reasons_json, event_keys_json, model, generated_at_unix,
                     current_price, previous_change_rate, accumulated_volume,
                     intraday_volatility, market_checked_at_unix, signal_expires_at_unix,
-                    decision_status, block_reason
+                    decision_status, block_reason, instrument_status_code,
+                    market_warning_code, temporary_stop
              FROM stock_daily_outlooks WHERE day_key = ?1
              ORDER BY confidence DESC, symbol ASC",
         )
@@ -464,6 +482,9 @@ pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
                 signal_expires_at_unix: row.get(15)?,
                 decision_status: row.get(16)?,
                 block_reason: row.get(17)?,
+                instrument_status_code: row.get(18)?,
+                market_warning_code: row.get(19)?,
+                temporary_stop: row.get::<_, Option<i64>>(20)?.map(|value| value != 0),
             })
         })
         .map_err(database_error)?;
@@ -618,14 +639,21 @@ pub async fn refresh_outlook_market_data(state: &AppState) -> ApiResult<Vec<Dail
                     checked_at,
                     snapshot.previous_change_rate,
                     snapshot.intraday_volatility,
+                    snapshot.current_price,
+                    snapshot.accumulated_volume,
+                    snapshot.instrument_status_code.as_deref(),
+                    snapshot.market_warning_code.as_deref(),
+                    snapshot.temporary_stop,
                 );
                 connection
                     .execute(
                         "UPDATE stock_daily_outlooks SET current_price = ?1,
                          previous_change_rate = ?2, accumulated_volume = ?3,
                          intraday_volatility = ?4, market_checked_at_unix = ?5,
-                         decision_status = ?6, block_reason = ?7
-                         WHERE day_key = ?8 AND symbol = ?9",
+                         decision_status = ?6, block_reason = ?7,
+                         instrument_status_code = ?8, market_warning_code = ?9,
+                         temporary_stop = ?10
+                         WHERE day_key = ?11 AND symbol = ?12",
                         params![
                             snapshot.current_price,
                             snapshot.previous_change_rate,
@@ -634,6 +662,9 @@ pub async fn refresh_outlook_market_data(state: &AppState) -> ApiResult<Vec<Dail
                             checked_at,
                             status,
                             reason,
+                            snapshot.instrument_status_code,
+                            snapshot.market_warning_code,
+                            snapshot.temporary_stop.map(i64::from),
                             outlook.day_key,
                             outlook.symbol,
                         ],
@@ -661,6 +692,9 @@ struct MarketSnapshot {
     previous_change_rate: Option<f64>,
     accumulated_volume: Option<u64>,
     intraday_volatility: Option<f64>,
+    instrument_status_code: Option<String>,
+    market_warning_code: Option<String>,
+    temporary_stop: Option<bool>,
 }
 
 fn market_snapshot(output: &Value) -> MarketSnapshot {
@@ -677,6 +711,10 @@ fn market_snapshot(output: &Value) -> MarketSnapshot {
             }
             _ => None,
         },
+        instrument_status_code: value_string(output, "iscd_stat_cls_code"),
+        market_warning_code: value_string(output, "mrkt_warn_cls_code"),
+        temporary_stop: value_string(output, "temp_stop_yn")
+            .map(|value| value.eq_ignore_ascii_case("Y")),
     }
 }
 
@@ -688,17 +726,64 @@ fn value_f64(value: &Value, key: &str) -> Option<f64> {
     value.get(key)?.as_str()?.replace(',', "").parse().ok()
 }
 
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn evaluate_outlook_market_state(
     action: &str,
     expires_at: i64,
     now: i64,
     change_rate: Option<f64>,
     volatility: Option<f64>,
+    current_price: Option<u64>,
+    accumulated_volume: Option<u64>,
+    instrument_status_code: Option<&str>,
+    market_warning_code: Option<&str>,
+    temporary_stop: Option<bool>,
 ) -> (String, Option<String>) {
     if now >= expires_at {
         return (
             "expired".to_string(),
             Some("뉴스 신호의 유효기간이 지났습니다.".to_string()),
+        );
+    }
+    if temporary_stop == Some(true) {
+        return (
+            "blocked".to_string(),
+            Some("거래가 임시 정지된 종목입니다.".to_string()),
+        );
+    }
+    if instrument_status_code.is_some_and(|code| code != "00") {
+        return (
+            "blocked".to_string(),
+            Some("정상 종목 상태가 아니어서 후보에서 제외했습니다.".to_string()),
+        );
+    }
+    if market_warning_code.is_some_and(|code| code != "00") {
+        return (
+            "blocked".to_string(),
+            Some("시장경고 종목이라 후보에서 제외했습니다.".to_string()),
+        );
+    }
+    if accumulated_volume.is_some_and(|volume| volume < 10_000) {
+        return (
+            "blocked".to_string(),
+            Some("누적 거래량이 1만 주 미만이라 후보에서 제외했습니다.".to_string()),
+        );
+    }
+    if current_price
+        .zip(accumulated_volume)
+        .is_some_and(|(price, volume)| price.saturating_mul(volume) < 100_000_000)
+    {
+        return (
+            "blocked".to_string(),
+            Some("추정 거래대금이 1억 원 미만이라 후보에서 제외했습니다.".to_string()),
         );
     }
     if action == "buy_candidate" && change_rate.is_some_and(|rate| rate >= 5.0) {
@@ -729,6 +814,52 @@ fn signal_expires_at(generated_at: i64, horizon: &str) -> i64 {
 
 fn korea_day_key(timestamp: i64) -> i64 {
     (timestamp + 9 * 3600).div_euclid(24 * 3600)
+}
+
+pub fn ai_stock_candidates(state: &AppState) -> ApiResult<Vec<AiStockCandidate>> {
+    let watchlisted = crate::watchlist::list(state)?
+        .into_iter()
+        .map(|item| item.symbol)
+        .collect::<HashSet<_>>();
+    let mut candidates = daily_outlooks(state)?
+        .into_iter()
+        .map(|outlook| {
+            let mut reasons = Vec::new();
+            if outlook.action == "hold" {
+                reasons.push("AI 전망이 관망입니다.".to_string());
+            }
+            if outlook.decision_status != "eligible" {
+                reasons.push(
+                    outlook
+                        .block_reason
+                        .clone()
+                        .unwrap_or_else(|| "시장 검증을 통과하지 못했습니다.".to_string()),
+                );
+            }
+            let market = stocks::resolve_one(state, &outlook.symbol)
+                .map(|stock| stock.market)
+                .unwrap_or_else(|_| "KRX".to_string());
+            AiStockCandidate {
+                symbol: outlook.symbol.clone(),
+                name: outlook.name.clone(),
+                market,
+                is_watchlisted: watchlisted.contains(&outlook.symbol),
+                candidate_status: if reasons.is_empty() {
+                    "active".to_string()
+                } else {
+                    "excluded".to_string()
+                },
+                exclusion_reasons: reasons,
+                outlook,
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.is_watchlisted
+            .cmp(&right.is_watchlisted)
+            .then_with(|| right.outlook.confidence.total_cmp(&left.outlook.confidence))
+    });
+    Ok(candidates)
 }
 
 fn cluster_articles(articles: Vec<NewsArticle>) -> Vec<NewsEventGroup> {
@@ -1288,16 +1419,6 @@ fn ensure_analysis_columns(connection: &Connection) -> anyhow::Result<()> {
             ))?;
         }
     }
-    connection.execute_batch(
-        "UPDATE stock_daily_outlooks
-         SET signal_expires_at_unix = generated_at_unix + CASE impact_horizon
-             WHEN 'intraday' THEN 28800
-             WHEN 'short_term' THEN 259200
-             WHEN 'medium_term' THEN 1209600
-             WHEN 'long_term' THEN 2592000
-             ELSE 86400 END
-         WHERE signal_expires_at_unix = 0;",
-    )?;
     Ok(())
 }
 
@@ -1318,6 +1439,9 @@ fn ensure_outlook_columns(connection: &Connection) -> anyhow::Result<()> {
             "TEXT NOT NULL DEFAULT 'market_data_pending'",
         ),
         ("block_reason", "TEXT"),
+        ("instrument_status_code", "TEXT"),
+        ("market_warning_code", "TEXT"),
+        ("temporary_stop", "INTEGER"),
     ];
     drop(statement);
     for (name, definition) in columns {
@@ -1327,6 +1451,16 @@ fn ensure_outlook_columns(connection: &Connection) -> anyhow::Result<()> {
             ))?;
         }
     }
+    connection.execute_batch(
+        "UPDATE stock_daily_outlooks
+         SET signal_expires_at_unix = generated_at_unix + CASE impact_horizon
+             WHEN 'intraday' THEN 28800
+             WHEN 'short_term' THEN 259200
+             WHEN 'medium_term' THEN 1209600
+             WHEN 'long_term' THEN 2592000
+             ELSE 86400 END
+         WHERE signal_expires_at_unix = 0;",
+    )?;
     Ok(())
 }
 
@@ -1497,6 +1631,11 @@ mod tests {
             1_000_000,
             Some(5.2),
             Some(3.0),
+            Some(70_000),
+            Some(1_000_000),
+            Some("00"),
+            Some("00"),
+            Some(false),
         );
         assert_eq!(status, "blocked");
         assert!(reason.is_some());
@@ -1510,6 +1649,11 @@ mod tests {
             1_000_001,
             Some(-1.0),
             Some(2.0),
+            Some(70_000),
+            Some(1_000_000),
+            Some("00"),
+            Some("00"),
+            Some(false),
         );
         assert_eq!(status, "expired");
     }
@@ -1526,5 +1670,41 @@ mod tests {
         assert_eq!(snapshot.current_price, Some(70_000));
         assert_eq!(snapshot.accumulated_volume, Some(1_234_567));
         assert!((snapshot.intraday_volatility.unwrap_or_default() - 5.714).abs() < 0.001);
+    }
+
+    #[test]
+    fn blocks_low_liquidity_candidate() {
+        let (status, reason) = evaluate_outlook_market_state(
+            "buy_candidate",
+            2_000_000,
+            1_000_000,
+            Some(0.5),
+            Some(2.0),
+            Some(5_000),
+            Some(9_000),
+            Some("00"),
+            Some("00"),
+            Some(false),
+        );
+        assert_eq!(status, "blocked");
+        assert!(reason.unwrap_or_default().contains("거래량"));
+    }
+
+    #[test]
+    fn blocks_market_warning_candidate() {
+        let (status, reason) = evaluate_outlook_market_state(
+            "sell_candidate",
+            2_000_000,
+            1_000_000,
+            Some(-1.0),
+            Some(2.0),
+            Some(70_000),
+            Some(1_000_000),
+            Some("00"),
+            Some("01"),
+            Some(false),
+        );
+        assert_eq!(status, "blocked");
+        assert!(reason.unwrap_or_default().contains("시장경고"));
     }
 }

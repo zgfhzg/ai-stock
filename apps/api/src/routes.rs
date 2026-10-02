@@ -16,8 +16,8 @@ use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
     news::{
-        self, DailyStockOutlook, NewsAnalysisRun, NewsArticle, NewsCollectorStatus, NewsEventGroup,
-        StockNewsGroup,
+        self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsArticle,
+        NewsCollectorStatus, NewsEventGroup, StockNewsGroup,
     },
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
@@ -83,6 +83,7 @@ pub fn app_router() -> Router<AppState> {
             post(refresh_news_outlook_market_data),
         )
         .route("/api/news/stocks", get(news_stock_groups))
+        .route("/api/news/candidates", get(news_ai_candidates))
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
         .route("/api/news/analyze", post(analyze_news))
@@ -290,6 +291,12 @@ async fn news_list(
 
 async fn news_stock_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<StockNewsGroup>>> {
     Ok(Json(news::grouped_by_stock(&state, 100)?))
+}
+
+async fn news_ai_candidates(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<AiStockCandidate>>> {
+    Ok(Json(news::ai_stock_candidates(&state)?))
 }
 
 async fn news_event_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<NewsEventGroup>>> {

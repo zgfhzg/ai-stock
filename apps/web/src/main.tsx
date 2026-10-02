@@ -244,6 +244,19 @@ type DailyStockOutlook = {
   signal_expires_at_unix: number;
   decision_status: "market_data_pending" | "eligible" | "blocked" | "expired" | "market_data_unavailable";
   block_reason?: string | null;
+  instrument_status_code?: string | null;
+  market_warning_code?: string | null;
+  temporary_stop?: boolean | null;
+};
+
+type AiStockCandidate = {
+  symbol: string;
+  name: string;
+  market: string;
+  is_watchlisted: boolean;
+  candidate_status: "active" | "excluded";
+  exclusion_reasons: string[];
+  outlook: DailyStockOutlook;
 };
 
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
@@ -411,6 +424,7 @@ function App() {
   const [dailyOutlooks, setDailyOutlooks] = React.useState<DailyStockOutlook[]>([]);
   const [dailyOutlooksGenerating, setDailyOutlooksGenerating] = React.useState(false);
   const [outlookMarketRefreshing, setOutlookMarketRefreshing] = React.useState(false);
+  const [aiStockCandidates, setAiStockCandidates] = React.useState<AiStockCandidate[]>([]);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -667,18 +681,21 @@ function App() {
       fetchJson<NewsCollectorStatus>("/api/news/status"),
       fetchJson<StockNewsGroup[]>("/api/news/stocks"),
       fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
+      fetchJson<AiStockCandidate[]>("/api/news/candidates"),
     ])
-      .then(([events, collector, groups, outlooks]) => {
+      .then(([events, collector, groups, outlooks, candidates]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
         setDailyOutlooks(outlooks);
+        setAiStockCandidates(candidates);
       })
       .catch(() => {
         setNewsEvents([]);
         setNewsStatus(null);
         setStockNewsGroups([]);
         setDailyOutlooks([]);
+        setAiStockCandidates([]);
       });
   }
 
@@ -709,6 +726,7 @@ function App() {
     setError(null);
     fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks", { method: "POST" })
       .then(setDailyOutlooks)
+      .then(loadNews)
       .catch((error) => setError(error instanceof Error ? error.message : "오늘의 AI 전망 생성에 실패했습니다."))
       .finally(() => setDailyOutlooksGenerating(false));
   }
@@ -718,6 +736,7 @@ function App() {
     setError(null);
     fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks/market-data", { method: "POST" })
       .then(setDailyOutlooks)
+      .then(loadNews)
       .catch((error) => setError(error instanceof Error ? error.message : "전망에 가격 정보를 결합하지 못했습니다."))
       .finally(() => setOutlookMarketRefreshing(false));
   }
@@ -1152,6 +1171,29 @@ function App() {
                 </button>
               </div>
             </div>
+            {aiStockCandidates.length > 0 ? (
+              <section className="ai-candidates" aria-label="AI 발견 종목">
+                <div className="candidate-section-title">
+                  <strong>AI 발견 종목</strong>
+                  <span>활성 {aiStockCandidates.filter((candidate) => candidate.candidate_status === "active").length} · 제외 {aiStockCandidates.filter((candidate) => candidate.candidate_status === "excluded").length}</span>
+                </div>
+                <div className="candidate-list">
+                  {aiStockCandidates.slice(0, 10).map((candidate) => (
+                    <article className={`candidate-row ${candidate.candidate_status}`} key={candidate.symbol}>
+                      <div>
+                        <strong>{candidate.name}</strong>
+                        <span>{candidate.symbol} · {candidate.market}</span>
+                      </div>
+                      <div>
+                        <span className="candidate-origin">{candidate.is_watchlisted ? "관심종목 포함" : "신규 후보"}</span>
+                        <strong>{formatOutlookAction(candidate.outlook.action)} · {Math.round(candidate.outlook.confidence * 100)}%</strong>
+                      </div>
+                      <small>{candidate.candidate_status === "active" ? "시장 조건 통과" : candidate.exclusion_reasons.join(" ")}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             {dailyOutlooks.length > 0 ? (
               <div className="daily-outlooks" aria-label="오늘의 종목별 AI 전망">
                 {dailyOutlooks.slice(0, 8).map((outlook) => (
