@@ -259,6 +259,24 @@ type AiStockCandidate = {
   outlook: DailyStockOutlook;
 };
 
+type NewsTradeDecision = {
+  day_key: number;
+  symbol: string;
+  name: string;
+  side: "buy" | "sell" | "hold";
+  confidence: number;
+  quantity: number;
+  price: number;
+  order_amount_krw: number;
+  status: "ready_for_review" | "blocked" | "hold";
+  risk_approved: boolean;
+  block_reason?: string | null;
+  reasons: string[];
+  event_keys: string[];
+  generated_at_unix: number;
+  order_submitted: boolean;
+};
+
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
 
 type TradingRule = {
@@ -425,6 +443,8 @@ function App() {
   const [dailyOutlooksGenerating, setDailyOutlooksGenerating] = React.useState(false);
   const [outlookMarketRefreshing, setOutlookMarketRefreshing] = React.useState(false);
   const [aiStockCandidates, setAiStockCandidates] = React.useState<AiStockCandidate[]>([]);
+  const [newsTradeDecisions, setNewsTradeDecisions] = React.useState<NewsTradeDecision[]>([]);
+  const [newsTradeDecisionGenerating, setNewsTradeDecisionGenerating] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -682,13 +702,15 @@ function App() {
       fetchJson<StockNewsGroup[]>("/api/news/stocks"),
       fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
       fetchJson<AiStockCandidate[]>("/api/news/candidates"),
+      fetchJson<NewsTradeDecision[]>("/api/news/trade-decisions"),
     ])
-      .then(([events, collector, groups, outlooks, candidates]) => {
+      .then(([events, collector, groups, outlooks, candidates, decisions]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
         setDailyOutlooks(outlooks);
         setAiStockCandidates(candidates);
+        setNewsTradeDecisions(decisions);
       })
       .catch(() => {
         setNewsEvents([]);
@@ -696,6 +718,7 @@ function App() {
         setStockNewsGroups([]);
         setDailyOutlooks([]);
         setAiStockCandidates([]);
+        setNewsTradeDecisions([]);
       });
   }
 
@@ -739,6 +762,16 @@ function App() {
       .then(loadNews)
       .catch((error) => setError(error instanceof Error ? error.message : "전망에 가격 정보를 결합하지 못했습니다."))
       .finally(() => setOutlookMarketRefreshing(false));
+  }
+
+  function handleGenerateNewsTradeDecisions() {
+    setNewsTradeDecisionGenerating(true);
+    setError(null);
+    fetchJson<NewsTradeDecision[]>("/api/news/trade-decisions", { method: "POST" })
+      .then(setNewsTradeDecisions)
+      .then(loadNews)
+      .catch((error) => setError(error instanceof Error ? error.message : "뉴스 기반 모의매매 결정을 만들지 못했습니다."))
+      .finally(() => setNewsTradeDecisionGenerating(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1169,8 +1202,35 @@ function App() {
                   <RefreshCw size={17} />
                   <span>{outlookMarketRefreshing ? "가격 확인 중" : "가격 결합"}</span>
                 </button>
+                <button type="button" onClick={handleGenerateNewsTradeDecisions} disabled={newsTradeDecisionGenerating || dailyOutlooks.length === 0}>
+                  <ShieldCheck size={17} />
+                  <span>{newsTradeDecisionGenerating ? "결정 계산 중" : "모의 결정"}</span>
+                </button>
               </div>
             </div>
+            {newsTradeDecisions.length > 0 ? (
+              <section className="news-trade-decisions" aria-label="뉴스 기반 모의매매 결정">
+                <div className="candidate-section-title">
+                  <strong>뉴스 기반 모의매매 결정</strong>
+                  <span>검토 가능 {newsTradeDecisions.filter((decision) => decision.status === "ready_for_review").length} · 주문 실행 0</span>
+                </div>
+                <div className="candidate-list">
+                  {newsTradeDecisions.slice(0, 10).map((decision) => (
+                    <article className={`trade-decision-row ${decision.status}`} key={decision.symbol}>
+                      <div>
+                        <strong>{decision.name}</strong>
+                        <span>{decision.symbol} · {formatNewsTradeSide(decision.side)} · 신뢰도 {Math.round(decision.confidence * 100)}%</span>
+                      </div>
+                      <div className="trade-decision-order">
+                        <strong>{decision.quantity > 0 ? `${decision.quantity.toLocaleString("ko-KR")}주` : "주문 없음"}</strong>
+                        <span>{decision.order_amount_krw > 0 ? `${decision.order_amount_krw.toLocaleString("ko-KR")}원` : formatNewsTradeStatus(decision.status)}</span>
+                      </div>
+                      <small>{decision.status === "ready_for_review" ? "위험관리 통과 · 사용자 검토 대기" : decision.block_reason ?? decision.reasons.join(" ")}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             {aiStockCandidates.length > 0 ? (
               <section className="ai-candidates" aria-label="AI 발견 종목">
                 <div className="candidate-section-title">
@@ -2460,6 +2520,18 @@ function sentimentClass(score: number) {
 function formatOutlookAction(action: DailyStockOutlook["action"]) {
   if (action === "buy_candidate") return "매수 후보";
   if (action === "sell_candidate") return "매도 후보";
+  return "관망";
+}
+
+function formatNewsTradeSide(side: NewsTradeDecision["side"]) {
+  if (side === "buy") return "매수 제안";
+  if (side === "sell") return "매도 제안";
+  return "관망";
+}
+
+function formatNewsTradeStatus(status: NewsTradeDecision["status"]) {
+  if (status === "ready_for_review") return "검토 대기";
+  if (status === "blocked") return "위험관리 차단";
   return "관망";
 }
 

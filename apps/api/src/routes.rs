@@ -17,7 +17,7 @@ use crate::{
     kis::{self, KisConfigStatus},
     news::{
         self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsArticle,
-        NewsCollectorStatus, NewsEventGroup, StockNewsGroup,
+        NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
     },
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
@@ -84,6 +84,10 @@ pub fn app_router() -> Router<AppState> {
         )
         .route("/api/news/stocks", get(news_stock_groups))
         .route("/api/news/candidates", get(news_ai_candidates))
+        .route(
+            "/api/news/trade-decisions",
+            get(news_trade_decisions).post(generate_news_trade_decisions),
+        )
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
         .route("/api/news/analyze", post(analyze_news))
@@ -297,6 +301,18 @@ async fn news_ai_candidates(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<AiStockCandidate>>> {
     Ok(Json(news::ai_stock_candidates(&state)?))
+}
+
+async fn news_trade_decisions(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<NewsTradeDecision>>> {
+    Ok(Json(news::news_trade_decisions(&state)?))
+}
+
+async fn generate_news_trade_decisions(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<NewsTradeDecision>>> {
+    Ok(Json(news::generate_news_trade_decisions(&state).await?))
 }
 
 async fn news_event_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<NewsEventGroup>>> {

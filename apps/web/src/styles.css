@@ -1014,7 +1014,8 @@ h2 {
   margin-bottom: 12px;
 }
 
-.ai-candidates {
+.ai-candidates,
+.news-trade-decisions {
   margin-bottom: 12px;
 }
 
@@ -1036,7 +1037,8 @@ h2 {
   gap: 6px;
 }
 
-.candidate-row {
+.candidate-row,
+.trade-decision-row {
   min-height: 58px;
   display: grid;
   grid-template-columns: minmax(150px, 0.8fr) minmax(170px, 0.8fr) minmax(220px, 1.4fr);
@@ -1049,22 +1051,45 @@ h2 {
   background: #fbfdfb;
 }
 
+.trade-decision-row.ready_for_review {
+  border-left-color: #2f7b52;
+  background: #fbfdfb;
+}
+
+.trade-decision-row.blocked {
+  border-color: #eadbd8;
+  border-left-color: #b74b45;
+  background: #fffafa;
+}
+
+.trade-decision-row.hold {
+  border-left-color: #8b8171;
+  background: #fcfbf8;
+}
+
 .candidate-row.excluded {
   border-color: #e8dedc;
   border-left-color: #a9a39f;
   background: #fcfbfa;
 }
 
-.candidate-row > div {
+.candidate-row > div,
+.trade-decision-row > div {
   min-width: 0;
   display: grid;
   gap: 2px;
 }
 
 .candidate-row span,
-.candidate-row small {
+.candidate-row small,
+.trade-decision-row span,
+.trade-decision-row small {
   color: #657066;
   font-size: 12px;
+}
+
+.trade-decision-order {
+  text-align: right;
 }
 
 .candidate-origin {
@@ -1385,7 +1410,9 @@ h2 {
   .crypto-order-form,
   .crypto-order-form.futures,
   .crypto-market-row,
-  .quote-row {
+  .quote-row,
+  .candidate-row,
+  .trade-decision-row {
     grid-template-columns: 1fr;
   }
 
@@ -1452,6 +1479,10 @@ h2 {
 
   .crypto-market-row div:nth-child(2) {
     justify-items: start;
+    text-align: left;
+  }
+
+  .trade-decision-order {
     text-align: left;
   }
 }

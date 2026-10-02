@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::Path,
     time::Instant,
@@ -17,6 +17,7 @@ use tokio::{
 
 use crate::{
     error::{api_error, ApiResult},
+    orders::{self, OrderRequest},
     state::AppState,
     stocks,
     strategy::{self, NewsArticleInput},
@@ -119,6 +120,31 @@ pub struct AiStockCandidate {
     pub candidate_status: String,
     pub exclusion_reasons: Vec<String>,
     pub outlook: DailyStockOutlook,
+}
+
+#[derive(Clone, Serialize)]
+pub struct NewsTradeDecision {
+    pub day_key: i64,
+    pub symbol: String,
+    pub name: String,
+    pub side: String,
+    pub confidence: f64,
+    pub quantity: u32,
+    pub price: u64,
+    pub order_amount_krw: u64,
+    pub status: String,
+    pub risk_approved: bool,
+    pub block_reason: Option<String>,
+    pub reasons: Vec<String>,
+    pub event_keys: Vec<String>,
+    pub generated_at_unix: i64,
+    pub order_submitted: bool,
+}
+
+#[derive(Clone, Default)]
+struct NewsHolding {
+    quantity: u32,
+    current_value: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -229,6 +255,24 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              instrument_status_code TEXT,
              market_warning_code TEXT,
              temporary_stop INTEGER,
+             PRIMARY KEY (day_key, symbol)
+         );
+         CREATE TABLE IF NOT EXISTS news_trade_decisions (
+             day_key INTEGER NOT NULL,
+             symbol TEXT NOT NULL,
+             name TEXT NOT NULL,
+             side TEXT NOT NULL,
+             confidence REAL NOT NULL,
+             quantity INTEGER NOT NULL,
+             price INTEGER NOT NULL,
+             order_amount_krw INTEGER NOT NULL,
+             status TEXT NOT NULL,
+             risk_approved INTEGER NOT NULL,
+             block_reason TEXT,
+             reasons_json TEXT NOT NULL,
+             event_keys_json TEXT NOT NULL,
+             generated_at_unix INTEGER NOT NULL,
+             order_submitted INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (day_key, symbol)
          );",
     )?;
@@ -860,6 +904,258 @@ pub fn ai_stock_candidates(state: &AppState) -> ApiResult<Vec<AiStockCandidate>>
             .then_with(|| right.outlook.confidence.total_cmp(&left.outlook.confidence))
     });
     Ok(candidates)
+}
+
+pub fn news_trade_decisions(state: &AppState) -> ApiResult<Vec<NewsTradeDecision>> {
+    let day_key = korea_day_key(unix_now() as i64);
+    let connection = open_database(state).map_err(database_error)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT day_key, symbol, name, side, confidence, quantity, price,
+                    order_amount_krw, status, risk_approved, block_reason,
+                    reasons_json, event_keys_json, generated_at_unix, order_submitted
+             FROM news_trade_decisions WHERE day_key = ?1
+             ORDER BY risk_approved DESC, confidence DESC, symbol ASC",
+        )
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map([day_key], |row| {
+            let reasons_json: String = row.get(11)?;
+            let event_keys_json: String = row.get(12)?;
+            Ok(NewsTradeDecision {
+                day_key: row.get(0)?,
+                symbol: row.get(1)?,
+                name: row.get(2)?,
+                side: row.get(3)?,
+                confidence: row.get(4)?,
+                quantity: row.get(5)?,
+                price: row.get(6)?,
+                order_amount_krw: row.get(7)?,
+                status: row.get(8)?,
+                risk_approved: row.get::<_, i64>(9)? != 0,
+                block_reason: row.get(10)?,
+                reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
+                event_keys: serde_json::from_str(&event_keys_json).unwrap_or_default(),
+                generated_at_unix: row.get(13)?,
+                order_submitted: row.get::<_, i64>(14)? != 0,
+            })
+        })
+        .map_err(database_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+}
+
+pub async fn generate_news_trade_decisions(state: &AppState) -> ApiResult<Vec<NewsTradeDecision>> {
+    let outlooks = daily_outlooks(state)?;
+    if outlooks.is_empty() {
+        return Err(api_error(
+            StatusCode::PRECONDITION_FAILED,
+            "no_daily_outlooks",
+            "Generate daily outlooks before creating trade decisions.",
+        ));
+    }
+
+    let holdings = load_news_holdings(state).await?;
+    let risk = crate::risk_settings::get(state)?;
+    let portfolio_value = holdings
+        .values()
+        .map(|holding| holding.current_value)
+        .sum::<u64>();
+    let mut remaining_budget = risk.auto_trading_budget_krw.saturating_sub(portfolio_value);
+    let existing_order_count = orders::today_order_count(state)?;
+    let mut approved_order_count = 0_u32;
+    let now = unix_now() as i64;
+    let mut decisions = Vec::with_capacity(outlooks.len());
+    for outlook in &outlooks {
+        let mut decision = build_news_trade_decision(
+            outlook,
+            holdings.get(&outlook.symbol),
+            &risk,
+            state.config.auto_min_confidence,
+            remaining_budget,
+            now,
+        );
+        if decision.risk_approved {
+            if existing_order_count.saturating_add(approved_order_count)
+                >= risk.daily_max_order_count
+            {
+                decision.status = "blocked".to_string();
+                decision.risk_approved = false;
+                decision.block_reason = Some("일일 주문 횟수 한도에 도달했습니다.".to_string());
+                decision.quantity = 0;
+                decision.order_amount_krw = 0;
+            } else {
+                let validation = orders::validate_proposed_order(
+                    state,
+                    OrderRequest {
+                        side: decision.side.clone(),
+                        symbol: decision.symbol.clone(),
+                        quantity: decision.quantity,
+                        price: decision.price,
+                    },
+                );
+                if let Err((_, Json(error))) = validation {
+                    decision.status = "blocked".to_string();
+                    decision.risk_approved = false;
+                    decision.block_reason = Some(error.message);
+                    decision.quantity = 0;
+                    decision.order_amount_krw = 0;
+                } else {
+                    approved_order_count = approved_order_count.saturating_add(1);
+                    if decision.side == "buy" {
+                        remaining_budget =
+                            remaining_budget.saturating_sub(decision.order_amount_krw);
+                    }
+                }
+            }
+        }
+        decisions.push(decision);
+    }
+
+    let mut connection = open_database(state).map_err(database_error)?;
+    let transaction = connection.transaction().map_err(database_error)?;
+    for decision in &decisions {
+        transaction
+            .execute(
+                "INSERT INTO news_trade_decisions
+                    (day_key, symbol, name, side, confidence, quantity, price,
+                     order_amount_krw, status, risk_approved, block_reason,
+                     reasons_json, event_keys_json, generated_at_unix, order_submitted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+                 ON CONFLICT(day_key, symbol) DO UPDATE SET
+                    name = excluded.name, side = excluded.side,
+                    confidence = excluded.confidence, quantity = excluded.quantity,
+                    price = excluded.price, order_amount_krw = excluded.order_amount_krw,
+                    status = excluded.status, risk_approved = excluded.risk_approved,
+                    block_reason = excluded.block_reason, reasons_json = excluded.reasons_json,
+                    event_keys_json = excluded.event_keys_json,
+                    generated_at_unix = excluded.generated_at_unix,
+                    order_submitted = 0",
+                params![
+                    decision.day_key,
+                    decision.symbol,
+                    decision.name,
+                    decision.side,
+                    decision.confidence,
+                    decision.quantity,
+                    decision.price,
+                    decision.order_amount_krw,
+                    decision.status,
+                    i64::from(decision.risk_approved),
+                    decision.block_reason,
+                    serde_json::to_string(&decision.reasons).map_err(database_error)?,
+                    serde_json::to_string(&decision.event_keys).map_err(database_error)?,
+                    decision.generated_at_unix,
+                ],
+            )
+            .map_err(database_error)?;
+    }
+    transaction.commit().map_err(database_error)?;
+    news_trade_decisions(state)
+}
+
+async fn load_news_holdings(state: &AppState) -> ApiResult<HashMap<String, NewsHolding>> {
+    let balance = crate::kis::get_balance(state).await?;
+    let rows = balance
+        .output1
+        .as_ref()
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let symbol = row.get("pdno")?.as_str()?.to_string();
+            Some((
+                symbol,
+                NewsHolding {
+                    quantity: u32::try_from(value_u64(&row, "hldg_qty").unwrap_or_default())
+                        .unwrap_or(u32::MAX),
+                    current_value: value_u64(&row, "evlu_amt").unwrap_or_default(),
+                },
+            ))
+        })
+        .collect())
+}
+
+fn build_news_trade_decision(
+    outlook: &DailyStockOutlook,
+    holding: Option<&NewsHolding>,
+    risk: &crate::risk_settings::RiskSettings,
+    minimum_confidence: f64,
+    remaining_budget: u64,
+    now: i64,
+) -> NewsTradeDecision {
+    let side = match outlook.action.as_str() {
+        "buy_candidate" => "buy",
+        "sell_candidate" => "sell",
+        _ => "hold",
+    }
+    .to_string();
+    let price = outlook.current_price.unwrap_or_default();
+    let mut decision = NewsTradeDecision {
+        day_key: outlook.day_key,
+        symbol: outlook.symbol.clone(),
+        name: outlook.name.clone(),
+        side: side.clone(),
+        confidence: outlook.confidence,
+        quantity: 0,
+        price,
+        order_amount_krw: 0,
+        status: "blocked".to_string(),
+        risk_approved: false,
+        block_reason: None,
+        reasons: outlook.reasons.clone(),
+        event_keys: outlook.event_keys.clone(),
+        generated_at_unix: now,
+        order_submitted: false,
+    };
+
+    let block = if side == "hold" {
+        decision.status = "hold".to_string();
+        Some("AI 전망이 관망이라 주문을 제안하지 않습니다.")
+    } else if outlook.decision_status != "eligible" {
+        Some("가격·거래량 시장 검증을 통과하지 못했습니다.")
+    } else if outlook.confidence < minimum_confidence {
+        Some("AI 신뢰도가 자동매매 최소 기준보다 낮습니다.")
+    } else if price == 0 {
+        Some("유효한 현재가가 없어 주문 수량을 계산할 수 없습니다.")
+    } else {
+        None
+    };
+    if let Some(reason) = block {
+        decision.block_reason = Some(reason.to_string());
+        return decision;
+    }
+
+    let quantity = if side == "sell" {
+        let held = holding.map(|value| value.quantity).unwrap_or_default();
+        held.min(u32::try_from(risk.max_order_amount_krw / price).unwrap_or(u32::MAX))
+    } else {
+        let current_value = holding.map(|value| value.current_value).unwrap_or_default();
+        let position_limit = (risk.auto_trading_budget_krw as f64 * risk.max_position_ratio) as u64;
+        let available = remaining_budget
+            .min(risk.max_order_amount_krw)
+            .min(risk.max_daily_auto_order_amount_krw_per_symbol)
+            .min(position_limit.saturating_sub(current_value));
+        u32::try_from(available / price).unwrap_or(u32::MAX)
+    };
+    if quantity == 0 {
+        decision.block_reason = Some(
+            if side == "sell" {
+                "매도 가능한 보유 수량이 없습니다."
+            } else {
+                "예산 또는 종목별 위험 한도 안에서 매수 가능한 수량이 없습니다."
+            }
+            .to_string(),
+        );
+        return decision;
+    }
+
+    decision.quantity = quantity;
+    decision.order_amount_krw = price.saturating_mul(u64::from(quantity));
+    decision.status = "ready_for_review".to_string();
+    decision.risk_approved = true;
+    decision
 }
 
 fn cluster_articles(articles: Vec<NewsArticle>) -> Vec<NewsEventGroup> {
@@ -1742,5 +2038,93 @@ mod tests {
         );
         assert_eq!(status, "blocked");
         assert!(reason.unwrap_or_default().contains("정상 종목 상태"));
+    }
+
+    fn test_outlook(action: &str, decision_status: &str) -> DailyStockOutlook {
+        DailyStockOutlook {
+            day_key: 20_000,
+            symbol: "005930".to_string(),
+            name: "삼성전자".to_string(),
+            action: action.to_string(),
+            confidence: 0.8,
+            impact_horizon: "short_term".to_string(),
+            reasons: vec!["뉴스 근거".to_string()],
+            event_keys: vec!["evt-test".to_string()],
+            model: "test".to_string(),
+            generated_at_unix: 1_000_000,
+            current_price: Some(70_000),
+            previous_change_rate: Some(1.0),
+            accumulated_volume: Some(1_000_000),
+            intraday_volatility: Some(2.0),
+            market_checked_at_unix: Some(1_000_000),
+            signal_expires_at_unix: 2_000_000,
+            decision_status: decision_status.to_string(),
+            block_reason: None,
+            instrument_status_code: Some("55".to_string()),
+            market_warning_code: Some("00".to_string()),
+            temporary_stop: Some(false),
+        }
+    }
+
+    fn test_risk() -> crate::risk_settings::RiskSettings {
+        crate::risk_settings::RiskSettings {
+            auto_trading_budget_krw: 1_000_000,
+            max_order_amount_krw: 300_000,
+            max_daily_auto_order_amount_krw_per_symbol: 300_000,
+            max_position_ratio: 0.5,
+            daily_max_loss_ratio: 0.03,
+            daily_max_order_count: 20,
+            max_overseas_order_amount_usd: 100.0,
+            max_crypto_order_amount_usdt: 100.0,
+        }
+    }
+
+    #[test]
+    fn proposes_news_buy_within_risk_limits() {
+        let decision = build_news_trade_decision(
+            &test_outlook("buy_candidate", "eligible"),
+            None,
+            &test_risk(),
+            0.7,
+            1_000_000,
+            1_100_000,
+        );
+        assert_eq!(decision.side, "buy");
+        assert_eq!(decision.status, "ready_for_review");
+        assert!(decision.risk_approved);
+        assert_eq!(decision.quantity, 4);
+        assert_eq!(decision.order_amount_krw, 280_000);
+        assert!(!decision.order_submitted);
+    }
+
+    #[test]
+    fn blocks_news_trade_that_failed_market_validation() {
+        let decision = build_news_trade_decision(
+            &test_outlook("buy_candidate", "blocked"),
+            None,
+            &test_risk(),
+            0.7,
+            1_000_000,
+            1_100_000,
+        );
+        assert_eq!(decision.status, "blocked");
+        assert!(!decision.risk_approved);
+        assert_eq!(decision.quantity, 0);
+    }
+
+    #[test]
+    fn keeps_hold_outlook_as_non_order_decision() {
+        let decision = build_news_trade_decision(
+            &test_outlook("hold", "eligible"),
+            None,
+            &test_risk(),
+            0.7,
+            1_000_000,
+            1_100_000,
+        );
+        assert_eq!(decision.side, "hold");
+        assert_eq!(decision.status, "hold");
+        assert!(!decision.risk_approved);
+        assert!(!decision.order_submitted);
     }
 }

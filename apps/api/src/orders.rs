@@ -43,9 +43,8 @@ struct OrderLogEntry<'a> {
 }
 
 pub async fn place(state: &AppState, request: OrderRequest) -> ApiResult<OrderResponse> {
-    let normalized = normalize_request(request)?;
+    let normalized = validate_proposed_order(state, request)?;
     validate_live_trading_guard(state)?;
-    validate_risk(state, &normalized)?;
 
     let kis = kis::place_cash_order(
         state,
@@ -69,6 +68,12 @@ pub async fn place(state: &AppState, request: OrderRequest) -> ApiResult<OrderRe
 
     append_order_log(&state.config.order_log_path, &normalized, &response)?;
     Ok(response)
+}
+
+pub fn validate_proposed_order(state: &AppState, request: OrderRequest) -> ApiResult<OrderRequest> {
+    let normalized = normalize_request(request)?;
+    validate_risk(state, &normalized)?;
+    Ok(normalized)
 }
 
 pub fn list_logs(state: &AppState) -> ApiResult<Vec<Value>> {
@@ -158,7 +163,7 @@ fn order_amount(request: &OrderRequest) -> u64 {
     u64::from(request.quantity) * request.price
 }
 
-fn today_order_count(state: &AppState) -> ApiResult<u32> {
+pub(crate) fn today_order_count(state: &AppState) -> ApiResult<u32> {
     let path = &state.config.order_log_path;
     if !Path::new(path).exists() {
         return Ok(0);

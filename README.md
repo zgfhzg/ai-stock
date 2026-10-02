@@ -70,6 +70,8 @@ make up
 - `POST /api/news/daily-outlooks`: 최근 24시간 뉴스 이벤트로 오늘의 AI 전망 생성
 - `POST /api/news/daily-outlooks/market-data`: 전망에 현재가, 등락률, 거래량, 장중 변동성 결합
 - `GET /api/news/candidates`: 뉴스에서 발견한 AI 후보 종목과 제외 사유 조회
+- `GET /api/news/trade-decisions`: 오늘 저장된 뉴스 기반 모의매매 결정 조회
+- `POST /api/news/trade-decisions`: AI 전망, 시장 데이터, 계좌와 위험 한도를 결합한 주문 전 검토안 생성
 - `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
 - `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/news/analyze`: 미분석 뉴스 최대 한 배치를 AI로 분석
