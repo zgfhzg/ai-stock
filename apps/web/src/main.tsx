@@ -277,6 +277,55 @@ type NewsTradeDecision = {
   order_submitted: boolean;
 };
 
+type NewsPerformancePoint = {
+  decision_day_key: number;
+  symbol: string;
+  name: string;
+  side: "buy" | "sell" | "hold";
+  confidence: number;
+  sentiment_score?: number | null;
+  horizon_days: number;
+  baseline_price: number;
+  target_at_unix: number;
+  evaluated_price?: number | null;
+  raw_return_pct?: number | null;
+  directional_return_pct?: number | null;
+  hit?: boolean | null;
+  status: "pending" | "evaluated";
+  evaluated_at_unix?: number | null;
+  event_keys: string[];
+};
+
+type NewsPerformanceSummary = {
+  tracked_signals: number;
+  evaluated_points: number;
+  pending_points: number;
+  directional_samples: number;
+  hit_rate_pct?: number | null;
+  average_directional_return_pct?: number | null;
+  max_drawdown_pct?: number | null;
+  by_stock: Array<{
+    symbol: string;
+    name: string;
+    samples: number;
+    hit_rate_pct: number;
+    average_directional_return_pct: number;
+  }>;
+  by_sentiment: Array<{
+    sentiment: "positive" | "neutral" | "negative";
+    samples: number;
+    hit_rate_pct: number;
+    average_directional_return_pct: number;
+  }>;
+};
+
+type NewsPerformanceRun = {
+  due_points: number;
+  evaluated_points: number;
+  failed_symbols: number;
+  evaluated_at_unix: number;
+};
+
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
 
 type TradingRule = {
@@ -445,6 +494,10 @@ function App() {
   const [aiStockCandidates, setAiStockCandidates] = React.useState<AiStockCandidate[]>([]);
   const [newsTradeDecisions, setNewsTradeDecisions] = React.useState<NewsTradeDecision[]>([]);
   const [newsTradeDecisionGenerating, setNewsTradeDecisionGenerating] = React.useState(false);
+  const [newsPerformance, setNewsPerformance] = React.useState<NewsPerformancePoint[]>([]);
+  const [newsPerformanceSummary, setNewsPerformanceSummary] = React.useState<NewsPerformanceSummary | null>(null);
+  const [newsPerformanceEvaluating, setNewsPerformanceEvaluating] = React.useState(false);
+  const [lastNewsPerformanceRun, setLastNewsPerformanceRun] = React.useState<NewsPerformanceRun | null>(null);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -703,14 +756,18 @@ function App() {
       fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
       fetchJson<AiStockCandidate[]>("/api/news/candidates"),
       fetchJson<NewsTradeDecision[]>("/api/news/trade-decisions"),
+      fetchJson<NewsPerformancePoint[]>("/api/news/performance"),
+      fetchJson<NewsPerformanceSummary>("/api/news/performance/summary"),
     ])
-      .then(([events, collector, groups, outlooks, candidates, decisions]) => {
+      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
         setDailyOutlooks(outlooks);
         setAiStockCandidates(candidates);
         setNewsTradeDecisions(decisions);
+        setNewsPerformance(performance);
+        setNewsPerformanceSummary(performanceSummary);
       })
       .catch(() => {
         setNewsEvents([]);
@@ -719,6 +776,8 @@ function App() {
         setDailyOutlooks([]);
         setAiStockCandidates([]);
         setNewsTradeDecisions([]);
+        setNewsPerformance([]);
+        setNewsPerformanceSummary(null);
       });
   }
 
@@ -772,6 +831,18 @@ function App() {
       .then(loadNews)
       .catch((error) => setError(error instanceof Error ? error.message : "뉴스 기반 모의매매 결정을 만들지 못했습니다."))
       .finally(() => setNewsTradeDecisionGenerating(false));
+  }
+
+  function handleEvaluateNewsPerformance() {
+    setNewsPerformanceEvaluating(true);
+    setError(null);
+    fetchJson<NewsPerformanceRun>("/api/news/performance/evaluate", { method: "POST" })
+      .then((run) => {
+        setLastNewsPerformanceRun(run);
+        return loadNews();
+      })
+      .catch((error) => setError(error instanceof Error ? error.message : "AI 판단 성과를 평가하지 못했습니다."))
+      .finally(() => setNewsPerformanceEvaluating(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1206,6 +1277,10 @@ function App() {
                   <ShieldCheck size={17} />
                   <span>{newsTradeDecisionGenerating ? "결정 계산 중" : "모의 결정"}</span>
                 </button>
+                <button type="button" onClick={handleEvaluateNewsPerformance} disabled={newsPerformanceEvaluating || !newsPerformance.some((point) => point.status === "pending" && point.target_at_unix <= Date.now() / 1000)}>
+                  <Activity size={17} />
+                  <span>{newsPerformanceEvaluating ? "성과 평가 중" : "성과 평가"}</span>
+                </button>
               </div>
             </div>
             {newsTradeDecisions.length > 0 ? (
@@ -1226,6 +1301,65 @@ function App() {
                         <span>{decision.order_amount_krw > 0 ? `${decision.order_amount_krw.toLocaleString("ko-KR")}원` : formatNewsTradeStatus(decision.status)}</span>
                       </div>
                       <small>{decision.status === "ready_for_review" ? "위험관리 통과 · 사용자 검토 대기" : decision.block_reason ?? decision.reasons.join(" ")}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            {newsPerformanceSummary && newsPerformanceSummary.tracked_signals > 0 ? (
+              <section className="news-performance" aria-label="AI 판단 성과">
+                <div className="candidate-section-title">
+                  <strong>AI 판단 성과</strong>
+                  <span>추적 {newsPerformanceSummary.tracked_signals}건 · 평가 {newsPerformanceSummary.evaluated_points} · 대기 {newsPerformanceSummary.pending_points}</span>
+                </div>
+                <div className="performance-summary-grid">
+                  <div>
+                    <span>1일 방향 적중률</span>
+                    <strong>{formatOptionalPercent(newsPerformanceSummary.hit_rate_pct)}</strong>
+                  </div>
+                  <div>
+                    <span>평균 방향 수익률</span>
+                    <strong>{formatOptionalPercent(newsPerformanceSummary.average_directional_return_pct, true)}</strong>
+                  </div>
+                  <div>
+                    <span>최대 낙폭</span>
+                    <strong>{formatOptionalPercent(newsPerformanceSummary.max_drawdown_pct)}</strong>
+                  </div>
+                  <div>
+                    <span>방향 표본</span>
+                    <strong>{newsPerformanceSummary.directional_samples.toLocaleString("ko-KR")}건</strong>
+                  </div>
+                </div>
+                {lastNewsPerformanceRun ? (
+                  <small className="performance-run-result">최근 평가: 대상 {lastNewsPerformanceRun.due_points} · 완료 {lastNewsPerformanceRun.evaluated_points} · 실패 종목 {lastNewsPerformanceRun.failed_symbols}</small>
+                ) : null}
+                {newsPerformanceSummary.by_stock.length > 0 || newsPerformanceSummary.by_sentiment.length > 0 ? (
+                  <div className="performance-breakdowns">
+                    <div>
+                      <strong>종목별 1일 성과</strong>
+                      {newsPerformanceSummary.by_stock.slice(0, 4).map((stock) => (
+                        <span key={stock.symbol}>{stock.name} · {stock.samples}건 · 적중 {stock.hit_rate_pct.toFixed(1)}% · 평균 {formatOptionalPercent(stock.average_directional_return_pct, true)}</span>
+                      ))}
+                    </div>
+                    <div>
+                      <strong>감성별 1일 성과</strong>
+                      {newsPerformanceSummary.by_sentiment.map((sentiment) => (
+                        <span key={sentiment.sentiment}>{formatPerformanceSentiment(sentiment.sentiment)} · {sentiment.samples}건 · 적중 {sentiment.hit_rate_pct.toFixed(1)}% · 평균 {formatOptionalPercent(sentiment.average_directional_return_pct, true)}</span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                <div className="performance-list">
+                  {newsPerformance.slice(0, 9).map((point) => (
+                    <article className={`performance-row ${point.status}`} key={`${point.decision_day_key}-${point.symbol}-${point.horizon_days}`}>
+                      <div>
+                        <strong>{point.name}</strong>
+                        <span>{point.symbol} · {formatNewsTradeSide(point.side)} · {point.horizon_days}일</span>
+                      </div>
+                      <div>
+                        <strong>{point.status === "evaluated" ? formatOptionalPercent(point.directional_return_pct, true) : "평가 대기"}</strong>
+                        <span>{point.status === "evaluated" ? (point.hit == null ? "관망 기록" : point.hit ? "방향 적중" : "방향 실패") : `${formatRunTime(point.target_at_unix)} 이후`}</span>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -2533,6 +2667,18 @@ function formatNewsTradeStatus(status: NewsTradeDecision["status"]) {
   if (status === "ready_for_review") return "검토 대기";
   if (status === "blocked") return "위험관리 차단";
   return "관망";
+}
+
+function formatOptionalPercent(value?: number | null, signed = false) {
+  if (value == null) return "표본 대기";
+  const prefix = signed && value > 0 ? "+" : "";
+  return `${prefix}${value.toFixed(2)}%`;
+}
+
+function formatPerformanceSentiment(sentiment: "positive" | "neutral" | "negative") {
+  if (sentiment === "positive") return "긍정";
+  if (sentiment === "negative") return "부정";
+  return "중립";
 }
 
 function formatOutlookStatus(status: DailyStockOutlook["decision_status"]) {

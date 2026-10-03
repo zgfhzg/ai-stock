@@ -4,6 +4,7 @@ mod crypto;
 mod error;
 mod kis;
 mod news;
+mod news_performance;
 mod orders;
 mod overseas;
 mod risk_settings;
@@ -40,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let port = config.api_port;
     let state = AppState::new(config);
     news::initialize(&state)?;
+    news_performance::initialize(&state)?;
     if let Err((_, Json(error))) = rule_monitor::restore_monitor(&state).await {
         tracing::warn!("rule monitor restore failed: {}", error.message);
     }
@@ -47,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("AI monitor restore failed: {}", error.message);
     }
     news::start_collector(&state).await;
+    news_performance::start_evaluator(state.clone());
 
     let app = Router::new()
         .merge(app_router())

@@ -19,6 +19,7 @@ use crate::{
         self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsArticle,
         NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
     },
+    news_performance::{self, NewsPerformancePoint, NewsPerformanceRun, NewsPerformanceSummary},
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -87,6 +88,15 @@ pub fn app_router() -> Router<AppState> {
         .route(
             "/api/news/trade-decisions",
             get(news_trade_decisions).post(generate_news_trade_decisions),
+        )
+        .route("/api/news/performance", get(news_performance_points))
+        .route(
+            "/api/news/performance/summary",
+            get(news_performance_summary),
+        )
+        .route(
+            "/api/news/performance/evaluate",
+            post(evaluate_news_performance),
         )
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
@@ -313,6 +323,24 @@ async fn generate_news_trade_decisions(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<NewsTradeDecision>>> {
     Ok(Json(news::generate_news_trade_decisions(&state).await?))
+}
+
+async fn news_performance_points(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<NewsPerformancePoint>>> {
+    Ok(Json(news_performance::list(&state)?))
+}
+
+async fn news_performance_summary(
+    State(state): State<AppState>,
+) -> ApiResult<Json<NewsPerformanceSummary>> {
+    Ok(Json(news_performance::summary(&state)?))
+}
+
+async fn evaluate_news_performance(
+    State(state): State<AppState>,
+) -> ApiResult<Json<NewsPerformanceRun>> {
+    Ok(Json(news_performance::evaluate_due(&state).await?))
 }
 
 async fn news_event_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<NewsEventGroup>>> {

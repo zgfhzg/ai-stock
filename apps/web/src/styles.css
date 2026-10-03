@@ -1015,8 +1015,89 @@ h2 {
 }
 
 .ai-candidates,
-.news-trade-decisions {
+.news-trade-decisions,
+.news-performance {
   margin-bottom: 12px;
+}
+
+.performance-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid #e3e6df;
+  border-bottom: 1px solid #e3e6df;
+  margin-bottom: 8px;
+}
+
+.performance-summary-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-right: 1px solid #e3e6df;
+}
+
+.performance-summary-grid > div:last-child {
+  border-right: 0;
+}
+
+.performance-summary-grid span,
+.performance-run-result,
+.performance-row span {
+  color: #657066;
+  font-size: 12px;
+}
+
+.performance-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.performance-breakdowns > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #f8f7f2;
+}
+
+.performance-breakdowns span {
+  color: #657066;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.performance-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.performance-row {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #8b8171;
+  background: #f8f7f2;
+}
+
+.performance-row.evaluated {
+  border-left-color: #2f7b52;
+}
+
+.performance-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.performance-row > div:last-child {
+  justify-items: end;
+  text-align: right;
 }
 
 .candidate-section-title {
@@ -1416,6 +1497,12 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .performance-summary-grid,
+  .performance-list,
+  .performance-breakdowns {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .news-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -1483,6 +1570,33 @@ h2 {
   }
 
   .trade-decision-order {
+    text-align: left;
+  }
+}
+
+@media (max-width: 420px) {
+  .order-form,
+  .performance-summary-grid,
+  .performance-list,
+  .performance-breakdowns {
+    grid-template-columns: 1fr;
+  }
+
+  .performance-summary-grid > div {
+    border-right: 0;
+    border-bottom: 1px solid #e3e6df;
+  }
+
+  .performance-summary-grid > div:last-child {
+    border-bottom: 0;
+  }
+
+  .performance-row {
+    flex-direction: column;
+  }
+
+  .performance-row > div:last-child {
+    justify-items: start;
     text-align: left;
   }
 }

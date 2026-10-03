@@ -1050,6 +1050,7 @@ pub async fn generate_news_trade_decisions(state: &AppState) -> ApiResult<Vec<Ne
             .map_err(database_error)?;
     }
     transaction.commit().map_err(database_error)?;
+    crate::news_performance::seed_decisions(state, &decisions)?;
     news_trade_decisions(state)
 }
 
