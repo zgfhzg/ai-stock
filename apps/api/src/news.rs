@@ -59,6 +59,48 @@ pub struct NewsAnalysisRun {
 }
 
 #[derive(Clone, Serialize)]
+pub struct NewsAnalysisUsageRun {
+    pub id: i64,
+    pub started_at_unix: i64,
+    pub finished_at_unix: i64,
+    pub status: String,
+    pub requested: u64,
+    pub analyzed: u64,
+    pub failed: u64,
+    pub model: Option<String>,
+    pub elapsed_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub estimated_cost_usd: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct NewsAnalysisUsagePeriod {
+    pub runs: u64,
+    pub successful_runs: u64,
+    pub partial_runs: u64,
+    pub failed_runs: u64,
+    pub requested_articles: u64,
+    pub analyzed_articles: u64,
+    pub failed_articles: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub estimated_cost_usd: Option<f64>,
+    pub average_elapsed_ms: Option<f64>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct NewsAnalysisUsageSummary {
+    pub today: NewsAnalysisUsagePeriod,
+    pub last_7_days: NewsAnalysisUsagePeriod,
+    pub current_month: NewsAnalysisUsagePeriod,
+    pub recent_runs: Vec<NewsAnalysisUsageRun>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct StockNewsGroup {
     pub symbol: String,
     pub name: String,
@@ -233,6 +275,24 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_news_published
              ON news_articles(published_at_unix DESC);
+         CREATE TABLE IF NOT EXISTS news_analysis_runs (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             started_at_unix INTEGER NOT NULL,
+             finished_at_unix INTEGER NOT NULL,
+             status TEXT NOT NULL,
+             requested_count INTEGER NOT NULL,
+             analyzed_count INTEGER NOT NULL,
+             failed_count INTEGER NOT NULL,
+             model TEXT,
+             elapsed_ms INTEGER NOT NULL,
+             input_tokens INTEGER,
+             output_tokens INTEGER,
+             total_tokens INTEGER,
+             estimated_cost_usd REAL,
+             error TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_news_analysis_runs_started
+             ON news_analysis_runs(started_at_unix DESC);
          CREATE TABLE IF NOT EXISTS stock_daily_outlooks (
              day_key INTEGER NOT NULL,
              symbol TEXT NOT NULL,
@@ -1444,12 +1504,41 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
     }
 
     let requested = articles.len();
+    let started_at_unix = unix_now() as i64;
     let started_at = Instant::now();
     match strategy::analyze_news(state, articles.clone()).await {
         Ok(response) => {
             let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let connection = open_database(state).map_err(database_error)?;
             let now = unix_now() as i64;
+            let input_tokens = response.usage.as_ref().and_then(|usage| usage.input_tokens);
+            let output_tokens = response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.output_tokens);
+            let total_tokens = response.usage.as_ref().and_then(|usage| usage.total_tokens);
+            let run = NewsAnalysisRun {
+                requested,
+                analyzed: response.analyses.len(),
+                failed: requested.saturating_sub(response.analyses.len()),
+                estimated_cost_usd: estimate_news_analysis_cost(
+                    &response.model,
+                    input_tokens,
+                    output_tokens,
+                ),
+                model: Some(response.model.clone()),
+                elapsed_ms,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            };
+            let status = if run.failed == 0 {
+                "success"
+            } else {
+                "partial"
+            };
+            record_analysis_run(&connection, started_at_unix, now, status, &run, None)
+                .map_err(database_error)?;
             for analysis in &response.analyses {
                 let related_stocks = resolve_related_stocks(state, &analysis.related_stocks)?;
                 connection
@@ -1476,30 +1565,38 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
                     )
                     .map_err(database_error)?;
             }
-            let input_tokens = response.usage.as_ref().and_then(|usage| usage.input_tokens);
-            let output_tokens = response
-                .usage
-                .as_ref()
-                .and_then(|usage| usage.output_tokens);
-            let total_tokens = response.usage.as_ref().and_then(|usage| usage.total_tokens);
-            Ok(NewsAnalysisRun {
-                requested,
-                analyzed: response.analyses.len(),
-                failed: requested.saturating_sub(response.analyses.len()),
-                estimated_cost_usd: estimate_news_analysis_cost(
-                    &response.model,
-                    input_tokens,
-                    output_tokens,
-                ),
-                model: Some(response.model),
-                elapsed_ms,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-            })
+            Ok(run)
         }
         Err(error) => {
-            mark_analysis_failed(state, &articles, &error.to_string())?;
+            let error_message = error.to_string();
+            let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            let failed_run = NewsAnalysisRun {
+                requested,
+                analyzed: 0,
+                failed: requested,
+                model: None,
+                elapsed_ms,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                estimated_cost_usd: None,
+            };
+            match open_database(state).and_then(|connection| {
+                record_analysis_run(
+                    &connection,
+                    started_at_unix,
+                    unix_now() as i64,
+                    "failed",
+                    &failed_run,
+                    Some(&error_message),
+                )
+            }) {
+                Ok(()) => {}
+                Err(record_error) => {
+                    tracing::warn!("failed to record news analysis usage: {record_error}");
+                }
+            }
+            mark_analysis_failed(state, &articles, &error_message)?;
             Err(api_error(
                 StatusCode::BAD_GATEWAY,
                 "news_analysis_failed",
@@ -1507,6 +1604,134 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
             ))
         }
     }
+}
+
+pub fn analysis_usage_summary(state: &AppState) -> ApiResult<NewsAnalysisUsageSummary> {
+    let connection = open_database(state).map_err(database_error)?;
+    let now = unix_now() as i64;
+    let today_start = korea_day_key(now) * 86_400 - 9 * 3_600;
+    let last_7_days_start = today_start - 6 * 86_400;
+    let month_start: i64 = connection
+        .query_row(
+            "SELECT CAST(strftime('%s', datetime(?1, 'unixepoch', '+9 hours', 'start of month', '-9 hours')) AS INTEGER)",
+            [now],
+            |row| row.get(0),
+        )
+        .map_err(database_error)?;
+
+    Ok(NewsAnalysisUsageSummary {
+        today: analysis_usage_period(&connection, today_start)?,
+        last_7_days: analysis_usage_period(&connection, last_7_days_start)?,
+        current_month: analysis_usage_period(&connection, month_start)?,
+        recent_runs: recent_analysis_runs(&connection, 10)?,
+    })
+}
+
+fn record_analysis_run(
+    connection: &Connection,
+    started_at_unix: i64,
+    finished_at_unix: i64,
+    status: &str,
+    run: &NewsAnalysisRun,
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    let error = error.map(|value| value.chars().take(500).collect::<String>());
+    connection.execute(
+        "INSERT INTO news_analysis_runs (
+            started_at_unix, finished_at_unix, status, requested_count,
+            analyzed_count, failed_count, model, elapsed_ms, input_tokens,
+            output_tokens, total_tokens, estimated_cost_usd, error
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            started_at_unix,
+            finished_at_unix,
+            status,
+            run.requested as i64,
+            run.analyzed as i64,
+            run.failed as i64,
+            run.model,
+            run.elapsed_ms as i64,
+            run.input_tokens.map(|value| value as i64),
+            run.output_tokens.map(|value| value as i64),
+            run.total_tokens.map(|value| value as i64),
+            run.estimated_cost_usd,
+            error,
+        ],
+    )?;
+    Ok(())
+}
+
+fn analysis_usage_period(
+    connection: &Connection,
+    started_at_unix: i64,
+) -> ApiResult<NewsAnalysisUsagePeriod> {
+    connection
+        .query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(requested_count), 0),
+                COALESCE(SUM(analyzed_count), 0),
+                COALESCE(SUM(failed_count), 0),
+                SUM(input_tokens), SUM(output_tokens), SUM(total_tokens),
+                SUM(estimated_cost_usd), AVG(elapsed_ms)
+             FROM news_analysis_runs WHERE started_at_unix >= ?1",
+            [started_at_unix],
+            |row| {
+                Ok(NewsAnalysisUsagePeriod {
+                    runs: row.get(0)?,
+                    successful_runs: row.get(1)?,
+                    partial_runs: row.get(2)?,
+                    failed_runs: row.get(3)?,
+                    requested_articles: row.get(4)?,
+                    analyzed_articles: row.get(5)?,
+                    failed_articles: row.get(6)?,
+                    input_tokens: row.get(7)?,
+                    output_tokens: row.get(8)?,
+                    total_tokens: row.get(9)?,
+                    estimated_cost_usd: row.get(10)?,
+                    average_elapsed_ms: row.get(11)?,
+                })
+            },
+        )
+        .map_err(database_error)
+}
+
+fn recent_analysis_runs(
+    connection: &Connection,
+    limit: usize,
+) -> ApiResult<Vec<NewsAnalysisUsageRun>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, started_at_unix, finished_at_unix, status,
+                    requested_count, analyzed_count, failed_count, model, elapsed_ms,
+                    input_tokens, output_tokens, total_tokens, estimated_cost_usd, error
+             FROM news_analysis_runs ORDER BY started_at_unix DESC, id DESC LIMIT ?1",
+        )
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map([limit as i64], |row| {
+            Ok(NewsAnalysisUsageRun {
+                id: row.get(0)?,
+                started_at_unix: row.get(1)?,
+                finished_at_unix: row.get(2)?,
+                status: row.get(3)?,
+                requested: row.get(4)?,
+                analyzed: row.get(5)?,
+                failed: row.get(6)?,
+                model: row.get(7)?,
+                elapsed_ms: row.get(8)?,
+                input_tokens: row.get(9)?,
+                output_tokens: row.get(10)?,
+                total_tokens: row.get(11)?,
+                estimated_cost_usd: row.get(12)?,
+                error: row.get(13)?,
+            })
+        })
+        .map_err(database_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
 }
 
 fn resolve_related_stocks(
@@ -1887,6 +2112,86 @@ mod tests {
     fn removes_markup_and_limits_text() {
         assert_eq!(clean_text("<b>증시</b> 상승 소식", 6), "증시 상승");
         assert_eq!(clean_text("증시&nbsp;&amp; 환율", 30), "증시 & 환율");
+    }
+
+    #[test]
+    fn calculates_gpt_4o_mini_analysis_cost() {
+        let cost = estimate_news_analysis_cost("gpt-4o-mini", Some(1_000_000), Some(1_000_000));
+        assert_eq!(cost, Some(0.75));
+        assert_eq!(
+            estimate_news_analysis_cost("unknown", Some(10), Some(10)),
+            None
+        );
+    }
+
+    #[test]
+    fn aggregates_persisted_analysis_usage() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE news_analysis_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at_unix INTEGER NOT NULL,
+                    finished_at_unix INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_count INTEGER NOT NULL,
+                    analyzed_count INTEGER NOT NULL,
+                    failed_count INTEGER NOT NULL,
+                    model TEXT,
+                    elapsed_ms INTEGER NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    total_tokens INTEGER,
+                    estimated_cost_usd REAL,
+                    error TEXT
+                );",
+            )
+            .expect("usage table");
+        let success = NewsAnalysisRun {
+            requested: 3,
+            analyzed: 3,
+            failed: 0,
+            model: Some("gpt-4o-mini".to_string()),
+            elapsed_ms: 2_000,
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            total_tokens: Some(1_200),
+            estimated_cost_usd: Some(0.00027),
+        };
+        let failure = NewsAnalysisRun {
+            requested: 2,
+            analyzed: 0,
+            failed: 2,
+            model: None,
+            elapsed_ms: 4_000,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            estimated_cost_usd: None,
+        };
+        record_analysis_run(&connection, 100, 102, "success", &success, None).expect("success run");
+        record_analysis_run(&connection, 200, 204, "failed", &failure, Some("timeout"))
+            .expect("failed run");
+
+        let period = match analysis_usage_period(&connection, 0) {
+            Ok(period) => period,
+            Err(_) => panic!("usage period"),
+        };
+        assert_eq!(period.runs, 2);
+        assert_eq!(period.successful_runs, 1);
+        assert_eq!(period.failed_runs, 1);
+        assert_eq!(period.requested_articles, 5);
+        assert_eq!(period.analyzed_articles, 3);
+        assert_eq!(period.total_tokens, Some(1_200));
+        assert_eq!(period.average_elapsed_ms, Some(3_000.0));
+
+        let recent = match recent_analysis_runs(&connection, 1) {
+            Ok(runs) => runs,
+            Err(_) => panic!("recent runs"),
+        };
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].status, "failed");
+        assert_eq!(recent[0].error.as_deref(), Some("timeout"));
     }
 
     #[test]

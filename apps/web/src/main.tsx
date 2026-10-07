@@ -199,6 +199,45 @@ type NewsAnalysisRun = {
   estimated_cost_usd?: number | null;
 };
 
+type NewsAnalysisUsagePeriod = {
+  runs: number;
+  successful_runs: number;
+  partial_runs: number;
+  failed_runs: number;
+  requested_articles: number;
+  analyzed_articles: number;
+  failed_articles: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost_usd?: number | null;
+  average_elapsed_ms?: number | null;
+};
+
+type NewsAnalysisUsageRun = {
+  id: number;
+  started_at_unix: number;
+  finished_at_unix: number;
+  status: string;
+  requested: number;
+  analyzed: number;
+  failed: number;
+  model?: string | null;
+  elapsed_ms: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost_usd?: number | null;
+  error?: string | null;
+};
+
+type NewsAnalysisUsageSummary = {
+  today: NewsAnalysisUsagePeriod;
+  last_7_days: NewsAnalysisUsagePeriod;
+  current_month: NewsAnalysisUsagePeriod;
+  recent_runs: NewsAnalysisUsageRun[];
+};
+
 type StockNewsGroup = {
   symbol: string;
   name: string;
@@ -501,6 +540,7 @@ function App() {
   const [newsEvents, setNewsEvents] = React.useState<NewsEventGroup[]>([]);
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
   const [lastNewsAnalysisRun, setLastNewsAnalysisRun] = React.useState<NewsAnalysisRun | null>(null);
+  const [newsAnalysisUsage, setNewsAnalysisUsage] = React.useState<NewsAnalysisUsageSummary | null>(null);
   const [stockNewsGroups, setStockNewsGroups] = React.useState<StockNewsGroup[]>([]);
   const [selectedStockNewsSymbol, setSelectedStockNewsSymbol] = React.useState("");
   const [stockNewsTimeline, setStockNewsTimeline] = React.useState<NewsEventGroup[]>([]);
@@ -806,8 +846,9 @@ function App() {
       fetchJson<NewsPerformancePoint[]>("/api/news/performance"),
       fetchJson<NewsPerformanceSummary>("/api/news/performance/summary"),
       fetchJson<NewsPerformanceSettings>("/api/news/performance/settings"),
+      fetchJson<NewsAnalysisUsageSummary>("/api/news/usage"),
     ])
-      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings]) => {
+      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings, analysisUsage]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
@@ -820,6 +861,7 @@ function App() {
         setNewsPerformance(performance);
         setNewsPerformanceSummary(performanceSummary);
         setNewsPerformanceSettingsForm(formatNewsPerformanceSettingsForm(performanceSettings));
+        setNewsAnalysisUsage(analysisUsage);
       })
       .catch(() => {
         setNewsEvents([]);
@@ -832,6 +874,7 @@ function App() {
         setNewsTradeDecisions([]);
         setNewsPerformance([]);
         setNewsPerformanceSummary(null);
+        setNewsAnalysisUsage(null);
       });
   }
 
@@ -1364,6 +1407,44 @@ function App() {
                 </button>
               </div>
             </div>
+            {newsAnalysisUsage ? (
+              <section className="api-usage" aria-label="AI API 사용량과 예상 비용">
+                <div className="candidate-section-title">
+                  <strong>AI API 사용량</strong>
+                  <span>실제 뉴스 분석 호출 기준 · 예상 비용 USD</span>
+                </div>
+                <div className="api-usage-grid">
+                  {[
+                    { label: "오늘", period: newsAnalysisUsage.today },
+                    { label: "최근 7일", period: newsAnalysisUsage.last_7_days },
+                    { label: "이번 달", period: newsAnalysisUsage.current_month },
+                  ].map(({ label, period }) => (
+                    <div className="api-usage-period" key={label}>
+                      <span>{label}</span>
+                      <strong>{formatEstimatedCost(period.estimated_cost_usd)}</strong>
+                      <small>{formatTokenCount(period.total_tokens)} · 분석 {period.analyzed_articles.toLocaleString("ko-KR")}건</small>
+                      <small>호출 {period.runs.toLocaleString("ko-KR")} · 성공 {period.successful_runs} · 일부 {period.partial_runs} · 실패 {period.failed_runs}</small>
+                      <small>평균 {formatElapsedTime(period.average_elapsed_ms)}</small>
+                    </div>
+                  ))}
+                </div>
+                {newsAnalysisUsage.recent_runs.length > 0 ? (
+                  <div className="api-usage-runs">
+                    {newsAnalysisUsage.recent_runs.slice(0, 5).map((run) => (
+                      <div className={`api-usage-run ${run.status}`} key={run.id} title={run.error ?? undefined}>
+                        <time>{formatRunTime(run.started_at_unix)}</time>
+                        <strong>{formatAnalysisRunStatus(run.status)}</strong>
+                        <span>{run.model ?? "모델 미확인"} · {run.analyzed}/{run.requested}건</span>
+                        <span>{formatTokenCount(run.total_tokens)}</span>
+                        <span>{formatEstimatedCost(run.estimated_cost_usd)} · {formatElapsedTime(run.elapsed_ms)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <small className="api-usage-empty">아직 기록된 AI 분석 호출이 없습니다.</small>
+                )}
+              </section>
+            ) : null}
             <section className="performance-settings" aria-label="성과 자동 제외 기준">
               <div className="candidate-section-title">
                 <strong>성과 자동 제외 기준</strong>
@@ -2774,6 +2855,27 @@ function formatNewsAnalysisRun(run: NewsAnalysisRun) {
       ? `예상 $${run.estimated_cost_usd.toFixed(run.estimated_cost_usd >= 0.01 ? 4 : 6)}`
       : "비용 미집계";
   return `최근 AI 분석 ${run.analyzed}/${run.requested}건 · ${seconds}초 · ${tokens} · ${cost}`;
+}
+
+function formatEstimatedCost(value?: number | null) {
+  if (value == null) return "비용 미집계";
+  return `예상 $${value.toFixed(value >= 0.01 ? 4 : 6)}`;
+}
+
+function formatTokenCount(value?: number | null) {
+  return value == null ? "토큰 미집계" : `${value.toLocaleString("ko-KR")}토큰`;
+}
+
+function formatElapsedTime(value?: number | null) {
+  if (value == null) return "시간 미집계";
+  const seconds = value / 1000;
+  return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}초`;
+}
+
+function formatAnalysisRunStatus(status: string) {
+  if (status === "success") return "성공";
+  if (status === "partial") return "일부 완료";
+  return "실패";
 }
 
 function formatNewsAnalysisStatus(article: NewsArticle) {

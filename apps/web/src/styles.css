@@ -1017,8 +1017,91 @@ h2 {
 .ai-candidates,
 .news-trade-decisions,
 .news-performance,
+.api-usage,
 .performance-settings {
   margin-bottom: 12px;
+}
+
+.api-usage {
+  padding: 12px 0;
+  border-top: 1px solid #e3e6df;
+  border-bottom: 1px solid #e3e6df;
+}
+
+.api-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 8px;
+  border: 1px solid #e3e6df;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.api-usage-period {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  background: #fbfaf6;
+}
+
+.api-usage-period + .api-usage-period {
+  border-left: 1px solid #e3e6df;
+}
+
+.api-usage-period > span,
+.api-usage-period small,
+.api-usage-run span,
+.api-usage-run time,
+.api-usage-empty {
+  color: #657066;
+  font-size: 12px;
+}
+
+.api-usage-period > strong {
+  color: #245f45;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-usage-runs {
+  margin-top: 8px;
+  border-top: 1px solid #e3e6df;
+}
+
+.api-usage-run {
+  display: grid;
+  grid-template-columns: 105px 70px minmax(150px, 1fr) 110px 160px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 2px;
+  border-bottom: 1px solid #e3e6df;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-usage-run > * {
+  min-width: 0;
+}
+
+.api-usage-run > span:last-child {
+  text-align: right;
+}
+
+.api-usage-run.success > strong {
+  color: #2f6f4f;
+}
+
+.api-usage-run.partial > strong {
+  color: #8a6a16;
+}
+
+.api-usage-run.failed > strong {
+  color: #a23f39;
+}
+
+.api-usage-empty {
+  display: block;
+  margin-top: 8px;
 }
 
 .performance-settings {
@@ -1662,6 +1745,34 @@ h2 {
   .performance-list,
   .performance-breakdowns {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .api-usage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .api-usage-period + .api-usage-period {
+    border-left: 0;
+    border-top: 1px solid #e3e6df;
+  }
+
+  .api-usage-period:nth-child(2) {
+    border-top: 1px solid #e3e6df;
+    border-left: 0;
+  }
+
+  .api-usage .candidate-section-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .api-usage-run {
+    grid-template-columns: 95px 70px minmax(0, 1fr);
+  }
+
+  .api-usage-run > span:nth-last-child(-n + 2) {
+    display: none;
   }
 
   .performance-settings-form {

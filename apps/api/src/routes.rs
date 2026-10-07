@@ -16,8 +16,8 @@ use crate::{
     error::ApiResult,
     kis::{self, KisConfigStatus},
     news::{
-        self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsArticle,
-        NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
+        self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsAnalysisUsageSummary,
+        NewsArticle, NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
     },
     news_performance::{
         self, NewsPerformancePoint, NewsPerformanceRun, NewsPerformanceSettings,
@@ -110,6 +110,7 @@ pub fn app_router() -> Router<AppState> {
             get(news_performance_settings).put(update_news_performance_settings),
         )
         .route("/api/news/status", get(news_status))
+        .route("/api/news/usage", get(news_analysis_usage))
         .route("/api/news/collect", post(collect_news))
         .route("/api/news/analyze", post(analyze_news))
         .route("/api/orders", get(order_logs).post(place_order))
@@ -406,6 +407,12 @@ async fn collect_news(State(state): State<AppState>) -> ApiResult<Json<NewsColle
 
 async fn analyze_news(State(state): State<AppState>) -> ApiResult<Json<NewsAnalysisRun>> {
     Ok(Json(news::analyze_pending(&state).await?))
+}
+
+async fn news_analysis_usage(
+    State(state): State<AppState>,
+) -> ApiResult<Json<NewsAnalysisUsageSummary>> {
+    Ok(Json(news::analysis_usage_summary(&state)?))
 }
 
 async fn order_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {

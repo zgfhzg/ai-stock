@@ -78,6 +78,7 @@ make up
 - `POST /api/news/performance/evaluate`: 평가 시각이 지난 성과 항목을 현재가로 갱신
 - `GET /api/news/performance/settings`: 성과 기반 자동 제외 기준 조회
 - `PUT /api/news/performance/settings`: 최소 표본, 적중률, 평균 수익률, 최대 낙폭 기준 저장
+- `GET /api/news/usage`: 오늘, 최근 7일, 이번 달 AI 뉴스 분석 호출량, 토큰, 예상 비용 조회
 - `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
 - `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/news/analyze`: 미분석 뉴스 최대 한 배치를 AI로 분석
