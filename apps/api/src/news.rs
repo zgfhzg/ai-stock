@@ -481,6 +481,31 @@ pub fn grouped_events(state: &AppState, limit: usize) -> ApiResult<Vec<NewsEvent
     Ok(cluster_articles(list(state, limit)?))
 }
 
+pub fn stock_timeline(
+    state: &AppState,
+    symbol: &str,
+    limit: usize,
+) -> ApiResult<Vec<NewsEventGroup>> {
+    if !is_korean_stock_symbol(symbol) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_news_stock_symbol",
+            "A six-digit Korean stock symbol is required.",
+        ));
+    }
+    Ok(grouped_events(state, limit.clamp(1, 100))?
+        .into_iter()
+        .filter(|event| event_matches_stock(event, symbol))
+        .collect())
+}
+
+fn event_matches_stock(event: &NewsEventGroup, symbol: &str) -> bool {
+    event
+        .related_stocks
+        .iter()
+        .any(|stock| stock.get("symbol").and_then(Value::as_str) == Some(symbol))
+}
+
 pub fn daily_outlooks(state: &AppState) -> ApiResult<Vec<DailyStockOutlook>> {
     let connection = open_database(state).map_err(database_error)?;
     connection
@@ -2141,5 +2166,28 @@ mod tests {
         assert_eq!(decision.status, "hold");
         assert!(!decision.risk_approved);
         assert!(!decision.order_submitted);
+    }
+
+    #[test]
+    fn matches_timeline_event_to_exact_stock_symbol() {
+        let event = NewsEventGroup {
+            event_key: "evt-test".to_string(),
+            headline: "반도체 뉴스".to_string(),
+            article_count: 1,
+            source_count: 1,
+            sources: vec!["테스트".to_string()],
+            latest_published_at_unix: 1_000_000,
+            average_sentiment_score: Some(0.4),
+            max_importance: Some(3),
+            evidence_confidence: 0.6,
+            related_stocks: vec![serde_json::json!({
+                "symbol": "005930",
+                "name": "삼성전자"
+            })],
+            articles: Vec::new(),
+        };
+
+        assert!(event_matches_stock(&event, "005930"));
+        assert!(!event_matches_stock(&event, "000660"));
     }
 }

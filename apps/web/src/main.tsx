@@ -502,6 +502,9 @@ function App() {
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
   const [lastNewsAnalysisRun, setLastNewsAnalysisRun] = React.useState<NewsAnalysisRun | null>(null);
   const [stockNewsGroups, setStockNewsGroups] = React.useState<StockNewsGroup[]>([]);
+  const [selectedStockNewsSymbol, setSelectedStockNewsSymbol] = React.useState("");
+  const [stockNewsTimeline, setStockNewsTimeline] = React.useState<NewsEventGroup[]>([]);
+  const [stockNewsTimelineLoading, setStockNewsTimelineLoading] = React.useState(false);
   const [newsCollecting, setNewsCollecting] = React.useState(false);
   const [newsAnalyzing, setNewsAnalyzing] = React.useState(false);
   const [dailyOutlooks, setDailyOutlooks] = React.useState<DailyStockOutlook[]>([]);
@@ -591,6 +594,32 @@ function App() {
       setRiskForm(formatRiskForm(status.risk));
     }
   }, [status?.risk]);
+
+  React.useEffect(() => {
+    if (!selectedStockNewsSymbol) {
+      setStockNewsTimeline([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    setStockNewsTimelineLoading(true);
+    fetchJson<NewsEventGroup[]>(`/api/news/stocks/${selectedStockNewsSymbol}/timeline`, {
+      signal: controller.signal,
+    })
+      .then(setStockNewsTimeline)
+      .catch((error) => {
+        if (error.name !== "AbortError") {
+          setStockNewsTimeline([]);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setStockNewsTimelineLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [selectedStockNewsSymbol]);
 
   React.useEffect(() => {
     if (activeMarket === "stocks" || activeMarket === "overseas-stocks") {
@@ -782,6 +811,9 @@ function App() {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
+        setSelectedStockNewsSymbol((current) => (
+          groups.some((group) => group.symbol === current) ? current : groups[0]?.symbol ?? ""
+        ));
         setDailyOutlooks(outlooks);
         setAiStockCandidates(candidates);
         setNewsTradeDecisions(decisions);
@@ -793,6 +825,8 @@ function App() {
         setNewsEvents([]);
         setNewsStatus(null);
         setStockNewsGroups([]);
+        setSelectedStockNewsSymbol("");
+        setStockNewsTimeline([]);
         setDailyOutlooks([]);
         setAiStockCandidates([]);
         setNewsTradeDecisions([]);
@@ -1526,12 +1560,52 @@ function App() {
             {stockNewsGroups.length > 0 ? (
               <div className="stock-news-groups" aria-label="종목별 관련 뉴스">
                 {stockNewsGroups.slice(0, 6).map((group) => (
-                  <div className="stock-news-group" key={group.symbol}>
+                  <button
+                    className={`stock-news-group ${selectedStockNewsSymbol === group.symbol ? "active" : ""}`}
+                    key={group.symbol}
+                    type="button"
+                    onClick={() => setSelectedStockNewsSymbol(group.symbol)}
+                  >
                     <strong>{group.name}</strong>
                     <span>{group.symbol} · 이벤트 {group.event_count}건 · 출처 {group.source_count}곳 · {formatAverageSentiment(group.average_sentiment_score)}</span>
-                  </div>
+                  </button>
                 ))}
               </div>
+            ) : null}
+            {selectedStockNewsSymbol ? (
+              <section className="stock-news-timeline" aria-label="종목별 뉴스 타임라인">
+                <div className="candidate-section-title">
+                  <strong>{stockNewsGroups.find((group) => group.symbol === selectedStockNewsSymbol)?.name ?? selectedStockNewsSymbol} 뉴스 타임라인</strong>
+                  <span>{stockNewsTimeline.length}개 통합 이벤트</span>
+                </div>
+                {stockNewsTimelineLoading ? (
+                  <div className="log-line">타임라인을 불러오는 중입니다.</div>
+                ) : stockNewsTimeline.length > 0 ? (
+                  <div className="stock-news-timeline-list">
+                    {stockNewsTimeline.slice(0, 12).map((event) => {
+                      const article = event.articles.find((item) => item.analysis_status === "analyzed") ?? event.articles[0];
+                      return (
+                        <article className="stock-news-timeline-row" key={event.event_key}>
+                          <time dateTime={new Date(event.latest_published_at_unix * 1000).toISOString()}>{formatRunTime(event.latest_published_at_unix)}</time>
+                          <div>
+                            <a href={article?.url} rel="noreferrer" target="_blank">{event.headline}</a>
+                            <span>기사 {event.article_count}건 · 출처 {event.source_count}곳 · 근거 신뢰도 {Math.round(event.evidence_confidence * 100)}%</span>
+                            <div className="timeline-signal-row">
+                              <small className={`news-sentiment ${sentimentClass(event.average_sentiment_score)}`}>{formatAverageSentiment(event.average_sentiment_score)}</small>
+                              <small>중요도 {event.max_importance ?? 1}/5</small>
+                              <small>{formatImpactHorizon(article?.impact_horizon ?? "short_term")}</small>
+                            </div>
+                            <p>{article?.ai_summary || article?.summary || "AI 요약 대기"}</p>
+                            <small className="timeline-rationale"><strong>AI 근거</strong> {article?.rationale || "상세 근거 분석 대기"}</small>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="log-line">이 종목과 연결된 뉴스 이벤트가 없습니다.</div>
+                )}
+              </section>
             ) : null}
             {newsEvents.length > 0 ? (
               <div className="news-list">
@@ -2759,7 +2833,8 @@ function formatAverageSentiment(score?: number | null) {
   return "중립";
 }
 
-function sentimentClass(score: number) {
+function sentimentClass(score?: number | null) {
+  if (score == null) return "neutral";
   if (score >= 0.25) return "positive";
   if (score <= -0.25) return "negative";
   return "neutral";

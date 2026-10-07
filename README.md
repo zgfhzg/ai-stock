@@ -66,6 +66,7 @@ make up
 - `GET /api/news`: 최근 수집 뉴스 조회
 - `GET /api/news/events`: 유사 기사들을 사건 단위로 통합한 뉴스 이벤트 조회
 - `GET /api/news/stocks`: 종목별 뉴스 이벤트, 기사 수, 출처 수 집계
+- `GET /api/news/stocks/:symbol/timeline`: 종목별 통합 뉴스 이벤트와 AI 분석 근거 조회
 - `GET /api/news/daily-outlooks`: 오늘 저장된 종목별 AI 전망 조회
 - `POST /api/news/daily-outlooks`: 최근 24시간 뉴스 이벤트로 오늘의 AI 전망 생성
 - `POST /api/news/daily-outlooks/market-data`: 전망에 현재가, 등락률, 거래량, 장중 변동성 결합

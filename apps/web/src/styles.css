@@ -1310,6 +1310,20 @@ h2 {
   display: grid;
   gap: 3px;
   background: #fbfaf6;
+  color: #17211a;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stock-news-group:hover,
+.stock-news-group.active {
+  border-color: #6f9078;
+  background: #f3f8f3;
+}
+
+.stock-news-group.active {
+  box-shadow: inset 3px 0 0 #2f6f4f;
 }
 
 .stock-news-group strong {
@@ -1319,6 +1333,89 @@ h2 {
 .stock-news-group span {
   color: #657066;
   font-size: 12px;
+}
+
+.stock-news-timeline {
+  margin-bottom: 14px;
+  padding-top: 2px;
+}
+
+.stock-news-timeline-list {
+  border-top: 1px solid #e3e6df;
+}
+
+.stock-news-timeline-row {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 2px;
+  border-bottom: 1px solid #e3e6df;
+}
+
+.stock-news-timeline-row time {
+  color: #657066;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stock-news-timeline-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.stock-news-timeline-row a {
+  color: #17211a;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.stock-news-timeline-row a:hover {
+  color: #2f6f4f;
+  text-decoration: underline;
+}
+
+.stock-news-timeline-row span,
+.stock-news-timeline-row p,
+.timeline-rationale {
+  margin: 0;
+  color: #657066;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.timeline-signal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.timeline-signal-row small {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #f0f1ed;
+  color: #59635b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.timeline-signal-row .positive {
+  background: #fbecea;
+  color: #a83a2e;
+}
+
+.timeline-signal-row .negative {
+  background: #eaf1f9;
+  color: #2867a8;
+}
+
+.timeline-rationale {
+  padding-left: 8px;
+  border-left: 2px solid #9caf9e;
+}
+
+.timeline-rationale strong {
+  color: #37423a;
 }
 
 .news-list {
@@ -1569,6 +1666,11 @@ h2 {
 
   .performance-settings-form {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .stock-news-timeline-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
   .news-toolbar {

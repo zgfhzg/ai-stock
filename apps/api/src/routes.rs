@@ -87,6 +87,10 @@ pub fn app_router() -> Router<AppState> {
             post(refresh_news_outlook_market_data),
         )
         .route("/api/news/stocks", get(news_stock_groups))
+        .route(
+            "/api/news/stocks/:symbol/timeline",
+            get(news_stock_timeline),
+        )
         .route("/api/news/candidates", get(news_ai_candidates))
         .route(
             "/api/news/trade-decisions",
@@ -312,6 +316,13 @@ async fn news_list(
 
 async fn news_stock_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<StockNewsGroup>>> {
     Ok(Json(news::grouped_by_stock(&state, 100)?))
+}
+
+async fn news_stock_timeline(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+) -> ApiResult<Json<Vec<NewsEventGroup>>> {
+    Ok(Json(news::stock_timeline(&state, &symbol, 100)?))
 }
 
 async fn news_ai_candidates(
