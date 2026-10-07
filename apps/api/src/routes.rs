@@ -19,7 +19,10 @@ use crate::{
         self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsArticle,
         NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
     },
-    news_performance::{self, NewsPerformancePoint, NewsPerformanceRun, NewsPerformanceSummary},
+    news_performance::{
+        self, NewsPerformancePoint, NewsPerformanceRun, NewsPerformanceSettings,
+        NewsPerformanceSummary,
+    },
     orders::{self, OrderRequest, OrderResponse},
     overseas::{
         self, OverseasInstrument, OverseasOrderRequest, OverseasOrderResponse, OverseasQuote,
@@ -97,6 +100,10 @@ pub fn app_router() -> Router<AppState> {
         .route(
             "/api/news/performance/evaluate",
             post(evaluate_news_performance),
+        )
+        .route(
+            "/api/news/performance/settings",
+            get(news_performance_settings).put(update_news_performance_settings),
         )
         .route("/api/news/status", get(news_status))
         .route("/api/news/collect", post(collect_news))
@@ -341,6 +348,19 @@ async fn evaluate_news_performance(
     State(state): State<AppState>,
 ) -> ApiResult<Json<NewsPerformanceRun>> {
     Ok(Json(news_performance::evaluate_due(&state).await?))
+}
+
+async fn news_performance_settings(
+    State(state): State<AppState>,
+) -> ApiResult<Json<NewsPerformanceSettings>> {
+    Ok(Json(news_performance::settings(&state)?))
+}
+
+async fn update_news_performance_settings(
+    State(state): State<AppState>,
+    Json(settings): Json<NewsPerformanceSettings>,
+) -> ApiResult<Json<NewsPerformanceSettings>> {
+    Ok(Json(news_performance::save_settings(&state, settings)?))
 }
 
 async fn news_event_groups(State(state): State<AppState>) -> ApiResult<Json<Vec<NewsEventGroup>>> {

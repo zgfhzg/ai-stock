@@ -326,6 +326,22 @@ type NewsPerformanceRun = {
   evaluated_at_unix: number;
 };
 
+type NewsPerformanceSettings = {
+  enabled: boolean;
+  minimum_samples: number;
+  minimum_hit_rate_pct: number;
+  minimum_average_directional_return_pct: number;
+  maximum_drawdown_pct: number;
+};
+
+const recommendedNewsPerformanceSettings: NewsPerformanceSettings = {
+  enabled: true,
+  minimum_samples: 20,
+  minimum_hit_rate_pct: 45,
+  minimum_average_directional_return_pct: 0,
+  maximum_drawdown_pct: 10,
+};
+
 type TradingRuleTrigger = "buy_below" | "sell_above" | "stop_loss" | "take_profit";
 
 type TradingRule = {
@@ -498,6 +514,8 @@ function App() {
   const [newsPerformanceSummary, setNewsPerformanceSummary] = React.useState<NewsPerformanceSummary | null>(null);
   const [newsPerformanceEvaluating, setNewsPerformanceEvaluating] = React.useState(false);
   const [lastNewsPerformanceRun, setLastNewsPerformanceRun] = React.useState<NewsPerformanceRun | null>(null);
+  const [newsPerformanceSettingsForm, setNewsPerformanceSettingsForm] = React.useState(() => formatNewsPerformanceSettingsForm(recommendedNewsPerformanceSettings));
+  const [newsPerformanceSettingsSaving, setNewsPerformanceSettingsSaving] = React.useState(false);
   const [tradingRules, setTradingRules] = React.useState<TradingRule[]>([]);
   const [ruleQuery, setRuleQuery] = React.useState("");
   const [ruleTrigger, setRuleTrigger] = React.useState<TradingRuleTrigger>("buy_below");
@@ -758,8 +776,9 @@ function App() {
       fetchJson<NewsTradeDecision[]>("/api/news/trade-decisions"),
       fetchJson<NewsPerformancePoint[]>("/api/news/performance"),
       fetchJson<NewsPerformanceSummary>("/api/news/performance/summary"),
+      fetchJson<NewsPerformanceSettings>("/api/news/performance/settings"),
     ])
-      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary]) => {
+      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
@@ -768,6 +787,7 @@ function App() {
         setNewsTradeDecisions(decisions);
         setNewsPerformance(performance);
         setNewsPerformanceSummary(performanceSummary);
+        setNewsPerformanceSettingsForm(formatNewsPerformanceSettingsForm(performanceSettings));
       })
       .catch(() => {
         setNewsEvents([]);
@@ -843,6 +863,33 @@ function App() {
       })
       .catch((error) => setError(error instanceof Error ? error.message : "AI 판단 성과를 평가하지 못했습니다."))
       .finally(() => setNewsPerformanceEvaluating(false));
+  }
+
+  function handleNewsPerformanceSettingsChange(
+    key: keyof typeof newsPerformanceSettingsForm,
+    value: string | boolean,
+  ) {
+    setNewsPerformanceSettingsForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function handleSaveNewsPerformanceSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    const settings = parseNewsPerformanceSettingsForm(newsPerformanceSettingsForm);
+    if (!settings) {
+      setError("성과 제외 기준의 입력 범위를 확인하세요.");
+      return;
+    }
+
+    setNewsPerformanceSettingsSaving(true);
+    fetchJson<NewsPerformanceSettings>("/api/news/performance/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+      .then((saved) => setNewsPerformanceSettingsForm(formatNewsPerformanceSettingsForm(saved)))
+      .catch((error) => setError(error instanceof Error ? error.message : "성과 제외 기준을 저장하지 못했습니다."))
+      .finally(() => setNewsPerformanceSettingsSaving(false));
   }
 
   function handleStartAutoMonitor() {
@@ -1283,6 +1330,73 @@ function App() {
                 </button>
               </div>
             </div>
+            <section className="performance-settings" aria-label="성과 자동 제외 기준">
+              <div className="candidate-section-title">
+                <strong>성과 자동 제외 기준</strong>
+                <span>{newsPerformanceSettingsForm.enabled ? "적용 중" : "중지됨"}</span>
+              </div>
+              <form className="performance-settings-form" onSubmit={handleSaveNewsPerformanceSettings}>
+                <label className="performance-settings-toggle">
+                  <input
+                    checked={newsPerformanceSettingsForm.enabled}
+                    type="checkbox"
+                    onChange={(event) => handleNewsPerformanceSettingsChange("enabled", event.target.checked)}
+                  />
+                  <span>자동 제외</span>
+                </label>
+                <label>
+                  <span>최소 1일 표본</span>
+                  <input
+                    inputMode="numeric"
+                    max="1000"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsPerformanceSettingsForm.minimum_samples}
+                    onChange={(event) => handleNewsPerformanceSettingsChange("minimum_samples", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>최소 적중률 (%)</span>
+                  <input
+                    inputMode="decimal"
+                    max="100"
+                    min="0"
+                    step="0.1"
+                    type="number"
+                    value={newsPerformanceSettingsForm.minimum_hit_rate_pct}
+                    onChange={(event) => handleNewsPerformanceSettingsChange("minimum_hit_rate_pct", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>최소 평균 수익률 (%)</span>
+                  <input
+                    inputMode="decimal"
+                    max="100"
+                    min="-100"
+                    step="0.1"
+                    type="number"
+                    value={newsPerformanceSettingsForm.minimum_average_directional_return_pct}
+                    onChange={(event) => handleNewsPerformanceSettingsChange("minimum_average_directional_return_pct", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>최대 낙폭 (%)</span>
+                  <input
+                    inputMode="decimal"
+                    max="100"
+                    min="0.1"
+                    step="0.1"
+                    type="number"
+                    value={newsPerformanceSettingsForm.maximum_drawdown_pct}
+                    onChange={(event) => handleNewsPerformanceSettingsChange("maximum_drawdown_pct", event.target.value)}
+                  />
+                </label>
+                <button type="submit" disabled={newsPerformanceSettingsSaving}>
+                  {newsPerformanceSettingsSaving ? "저장 중" : "기준 저장"}
+                </button>
+              </form>
+            </section>
             {newsTradeDecisions.length > 0 ? (
               <section className="news-trade-decisions" aria-label="뉴스 기반 모의매매 결정">
                 <div className="candidate-section-title">
@@ -2679,6 +2793,46 @@ function formatPerformanceSentiment(sentiment: "positive" | "neutral" | "negativ
   if (sentiment === "positive") return "긍정";
   if (sentiment === "negative") return "부정";
   return "중립";
+}
+
+function formatNewsPerformanceSettingsForm(settings: NewsPerformanceSettings) {
+  return {
+    enabled: settings.enabled,
+    minimum_samples: String(settings.minimum_samples),
+    minimum_hit_rate_pct: String(settings.minimum_hit_rate_pct),
+    minimum_average_directional_return_pct: String(settings.minimum_average_directional_return_pct),
+    maximum_drawdown_pct: String(settings.maximum_drawdown_pct),
+  };
+}
+
+function parseNewsPerformanceSettingsForm(
+  form: ReturnType<typeof formatNewsPerformanceSettingsForm>,
+): NewsPerformanceSettings | null {
+  const minimumSamples = Number(form.minimum_samples);
+  const minimumHitRatePct = Number(form.minimum_hit_rate_pct);
+  const minimumAverageDirectionalReturnPct = Number(form.minimum_average_directional_return_pct);
+  const maximumDrawdownPct = Number(form.maximum_drawdown_pct);
+  const valid = Number.isInteger(minimumSamples)
+    && minimumSamples >= 1
+    && minimumSamples <= 1000
+    && Number.isFinite(minimumHitRatePct)
+    && minimumHitRatePct >= 0
+    && minimumHitRatePct <= 100
+    && Number.isFinite(minimumAverageDirectionalReturnPct)
+    && minimumAverageDirectionalReturnPct >= -100
+    && minimumAverageDirectionalReturnPct <= 100
+    && Number.isFinite(maximumDrawdownPct)
+    && maximumDrawdownPct > 0
+    && maximumDrawdownPct <= 100;
+  if (!valid) return null;
+
+  return {
+    enabled: form.enabled,
+    minimum_samples: minimumSamples,
+    minimum_hit_rate_pct: minimumHitRatePct,
+    minimum_average_directional_return_pct: minimumAverageDirectionalReturnPct,
+    maximum_drawdown_pct: maximumDrawdownPct,
+  };
 }
 
 function formatOutlookStatus(status: DailyStockOutlook["decision_status"]) {

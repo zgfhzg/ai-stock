@@ -1,6 +1,6 @@
 use axum::Json;
-use rusqlite::{params, Connection};
-use serde::Serialize;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -75,6 +75,43 @@ pub struct NewsPerformanceRun {
     pub evaluated_at_unix: i64,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct NewsPerformanceSettings {
+    pub enabled: bool,
+    pub minimum_samples: u64,
+    pub minimum_hit_rate_pct: f64,
+    pub minimum_average_directional_return_pct: f64,
+    pub maximum_drawdown_pct: f64,
+}
+
+impl Default for NewsPerformanceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            minimum_samples: 20,
+            minimum_hit_rate_pct: 45.0,
+            minimum_average_directional_return_pct: 0.0,
+            maximum_drawdown_pct: 10.0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct NewsPerformancePolicy {
+    settings: NewsPerformanceSettings,
+    stock_metrics: HashMap<String, SignalMetrics>,
+    sentiment_metrics: HashMap<String, SignalMetrics>,
+    event_sentiments: HashMap<String, f64>,
+}
+
+#[derive(Clone)]
+struct SignalMetrics {
+    samples: usize,
+    hit_rate_pct: f64,
+    average_directional_return_pct: f64,
+    maximum_drawdown_pct: f64,
+}
+
 #[derive(Clone)]
 struct PendingPoint {
     decision_day_key: i64,
@@ -110,9 +147,33 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
             PRIMARY KEY (decision_day_key, symbol, horizon_days)
          );
          CREATE INDEX IF NOT EXISTS idx_news_performance_due
-            ON news_trade_performance(status, target_at_unix);",
+            ON news_trade_performance(status, target_at_unix);
+         CREATE TABLE IF NOT EXISTS news_performance_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL,
+            minimum_samples INTEGER NOT NULL,
+            minimum_hit_rate_pct REAL NOT NULL,
+            minimum_average_directional_return_pct REAL NOT NULL,
+            maximum_drawdown_pct REAL NOT NULL,
+            updated_at_unix INTEGER NOT NULL
+         );",
     )?;
     ensure_column(&connection, "sentiment_score", "REAL")?;
+    let defaults = NewsPerformanceSettings::default();
+    connection.execute(
+        "INSERT OR IGNORE INTO news_performance_settings
+            (id, enabled, minimum_samples, minimum_hit_rate_pct,
+             minimum_average_directional_return_pct, maximum_drawdown_pct, updated_at_unix)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            i64::from(defaults.enabled),
+            defaults.minimum_samples,
+            defaults.minimum_hit_rate_pct,
+            defaults.minimum_average_directional_return_pct,
+            defaults.maximum_drawdown_pct,
+            unix_now(),
+        ],
+    )?;
     Ok(())
 }
 
@@ -125,6 +186,124 @@ pub fn start_evaluator(state: AppState) {
             sleep(Duration::from_secs(3600)).await;
         }
     });
+}
+
+pub fn settings(state: &AppState) -> ApiResult<NewsPerformanceSettings> {
+    let connection = open_database(state).map_err(database_error)?;
+    connection
+        .query_row(
+            "SELECT enabled, minimum_samples, minimum_hit_rate_pct,
+                    minimum_average_directional_return_pct, maximum_drawdown_pct
+             FROM news_performance_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok(NewsPerformanceSettings {
+                    enabled: row.get::<_, i64>(0)? != 0,
+                    minimum_samples: row.get(1)?,
+                    minimum_hit_rate_pct: row.get(2)?,
+                    minimum_average_directional_return_pct: row.get(3)?,
+                    maximum_drawdown_pct: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map(|settings| settings.unwrap_or_default())
+        .map_err(database_error)
+}
+
+pub fn save_settings(
+    state: &AppState,
+    settings: NewsPerformanceSettings,
+) -> ApiResult<NewsPerformanceSettings> {
+    validate_settings(&settings)?;
+    let connection = open_database(state).map_err(database_error)?;
+    connection
+        .execute(
+            "INSERT INTO news_performance_settings
+                (id, enabled, minimum_samples, minimum_hit_rate_pct,
+                 minimum_average_directional_return_pct, maximum_drawdown_pct, updated_at_unix)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                enabled = excluded.enabled,
+                minimum_samples = excluded.minimum_samples,
+                minimum_hit_rate_pct = excluded.minimum_hit_rate_pct,
+                minimum_average_directional_return_pct = excluded.minimum_average_directional_return_pct,
+                maximum_drawdown_pct = excluded.maximum_drawdown_pct,
+                updated_at_unix = excluded.updated_at_unix",
+            params![
+                i64::from(settings.enabled),
+                settings.minimum_samples,
+                settings.minimum_hit_rate_pct,
+                settings.minimum_average_directional_return_pct,
+                settings.maximum_drawdown_pct,
+                unix_now(),
+            ],
+        )
+        .map_err(database_error)?;
+    Ok(settings)
+}
+
+pub fn exclusion_policy(state: &AppState) -> ApiResult<NewsPerformancePolicy> {
+    let settings = settings(state)?;
+    if !settings.enabled {
+        return Ok(NewsPerformancePolicy {
+            settings,
+            stock_metrics: HashMap::new(),
+            sentiment_metrics: HashMap::new(),
+            event_sentiments: HashMap::new(),
+        });
+    }
+
+    let points = load_points(state, i64::MAX)?;
+    let event_sentiments = crate::news::grouped_events(state, 100)?
+        .into_iter()
+        .filter_map(|event| {
+            event
+                .average_sentiment_score
+                .map(|score| (event.event_key, score))
+        })
+        .collect();
+    Ok(NewsPerformancePolicy {
+        settings,
+        stock_metrics: grouped_metrics(&points, |point| Some(point.symbol.clone())),
+        sentiment_metrics: grouped_metrics(&points, |point| {
+            point.sentiment_score.map(sentiment_key)
+        }),
+        event_sentiments,
+    })
+}
+
+impl NewsPerformancePolicy {
+    pub fn exclusion_reason(
+        &self,
+        symbol: &str,
+        name: &str,
+        event_keys: &[String],
+    ) -> Option<String> {
+        if !self.settings.enabled {
+            return None;
+        }
+        if let Some(metrics) = self.stock_metrics.get(symbol) {
+            if let Some(reason) = metrics_exclusion_reason(&self.settings, name, metrics) {
+                return Some(reason);
+            }
+        }
+
+        let scores = event_keys
+            .iter()
+            .filter_map(|event_key| self.event_sentiments.get(event_key).copied())
+            .collect::<Vec<_>>();
+        let average_sentiment =
+            (!scores.is_empty()).then(|| scores.iter().sum::<f64>() / scores.len() as f64)?;
+        let sentiment = sentiment_key(average_sentiment);
+        self.sentiment_metrics.get(&sentiment).and_then(|metrics| {
+            metrics_exclusion_reason(
+                &self.settings,
+                &format!("{} 감성", sentiment_label(&sentiment)),
+                metrics,
+            )
+        })
+    }
 }
 
 pub fn seed_decisions(state: &AppState, decisions: &[NewsTradeDecision]) -> ApiResult<()> {
@@ -383,6 +562,93 @@ fn percentage(numerator: f64, denominator: usize) -> Option<f64> {
     (denominator > 0).then(|| numerator / denominator as f64 * 100.0)
 }
 
+fn grouped_metrics<F>(points: &[NewsPerformancePoint], key: F) -> HashMap<String, SignalMetrics>
+where
+    F: Fn(&NewsPerformancePoint) -> Option<String>,
+{
+    let mut grouped = HashMap::<String, Vec<(i64, f64, bool)>>::new();
+    for point in points.iter().filter(|point| point.horizon_days == 1) {
+        let Some(group_key) = key(point) else {
+            continue;
+        };
+        let Some((rate, evaluated_at)) = point.directional_return_pct.zip(point.evaluated_at_unix)
+        else {
+            continue;
+        };
+        grouped.entry(group_key).or_default().push((
+            evaluated_at,
+            rate,
+            point.hit.unwrap_or(false),
+        ));
+    }
+    grouped
+        .into_iter()
+        .map(|(key, mut samples)| {
+            samples.sort_by_key(|sample| sample.0);
+            let sample_count = samples.len();
+            let metrics = SignalMetrics {
+                samples: sample_count,
+                hit_rate_pct: samples.iter().filter(|sample| sample.2).count() as f64
+                    / sample_count as f64
+                    * 100.0,
+                average_directional_return_pct: samples.iter().map(|sample| sample.1).sum::<f64>()
+                    / sample_count as f64,
+                maximum_drawdown_pct: maximum_drawdown(samples.iter().map(|sample| sample.1))
+                    .unwrap_or_default(),
+            };
+            (key, metrics)
+        })
+        .collect()
+}
+
+fn metrics_exclusion_reason(
+    settings: &NewsPerformanceSettings,
+    label: &str,
+    metrics: &SignalMetrics,
+) -> Option<String> {
+    if metrics.samples < settings.minimum_samples as usize {
+        return None;
+    }
+    if metrics.hit_rate_pct < settings.minimum_hit_rate_pct {
+        return Some(format!(
+            "성과 자동 제외: {label} 1일 표본 {}건의 적중률 {:.1}%가 기준 {:.1}% 미만입니다.",
+            metrics.samples, metrics.hit_rate_pct, settings.minimum_hit_rate_pct
+        ));
+    }
+    if metrics.average_directional_return_pct < settings.minimum_average_directional_return_pct {
+        return Some(format!(
+            "성과 자동 제외: {label} 1일 평균 방향 수익률 {:.2}%가 기준 {:.2}% 미만입니다.",
+            metrics.average_directional_return_pct, settings.minimum_average_directional_return_pct
+        ));
+    }
+    if metrics.maximum_drawdown_pct > settings.maximum_drawdown_pct {
+        return Some(format!(
+            "성과 자동 제외: {label} 1일 누적 최대 낙폭 {:.2}%가 기준 {:.2}%를 초과했습니다.",
+            metrics.maximum_drawdown_pct, settings.maximum_drawdown_pct
+        ));
+    }
+    None
+}
+
+fn sentiment_key(score: f64) -> String {
+    if score > 0.15 {
+        "positive"
+    } else if score < -0.15 {
+        "negative"
+    } else {
+        "neutral"
+    }
+    .to_string()
+}
+
+fn sentiment_label(sentiment: &str) -> &'static str {
+    match sentiment {
+        "positive" => "긍정",
+        "negative" => "부정",
+        _ => "중립",
+    }
+}
+
 fn stock_summaries(points: &[NewsPerformancePoint]) -> Vec<StockPerformanceSummary> {
     let mut grouped = BTreeMap::<String, (String, Vec<(f64, bool)>)>::new();
     for point in points.iter().filter(|point| point.horizon_days == 1) {
@@ -431,15 +697,8 @@ fn sentiment_summaries(points: &[NewsPerformancePoint]) -> Vec<SentimentPerforma
         let Some(score) = point.sentiment_score else {
             continue;
         };
-        let sentiment = if score > 0.15 {
-            "positive"
-        } else if score < -0.15 {
-            "negative"
-        } else {
-            "neutral"
-        };
         grouped
-            .entry(sentiment.to_string())
+            .entry(sentiment_key(score))
             .or_default()
             .push((rate, point.hit.unwrap_or(false)));
     }
@@ -493,6 +752,26 @@ fn ensure_column(connection: &Connection, name: &str, definition: &str) -> anyho
         )?;
     }
     Ok(())
+}
+
+fn validate_settings(settings: &NewsPerformanceSettings) -> ApiResult<()> {
+    let valid = (1..=1000).contains(&settings.minimum_samples)
+        && settings.minimum_hit_rate_pct.is_finite()
+        && (0.0..=100.0).contains(&settings.minimum_hit_rate_pct)
+        && settings.minimum_average_directional_return_pct.is_finite()
+        && (-100.0..=100.0).contains(&settings.minimum_average_directional_return_pct)
+        && settings.maximum_drawdown_pct.is_finite()
+        && settings.maximum_drawdown_pct > 0.0
+        && settings.maximum_drawdown_pct <= 100.0;
+    if valid {
+        Ok(())
+    } else {
+        Err(api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_news_performance_settings",
+            "Performance settings are outside the allowed range.",
+        ))
+    }
 }
 
 fn unix_now() -> i64 {
@@ -583,5 +862,37 @@ mod tests {
         assert!(sentiments
             .iter()
             .any(|summary| { summary.sentiment == "neutral" && summary.hit_rate_pct == 100.0 }));
+    }
+
+    #[test]
+    fn uses_conservative_recommended_exclusion_defaults() {
+        let settings = NewsPerformanceSettings::default();
+        assert!(settings.enabled);
+        assert_eq!(settings.minimum_samples, 20);
+        assert_eq!(settings.minimum_hit_rate_pct, 45.0);
+        assert_eq!(settings.minimum_average_directional_return_pct, 0.0);
+        assert_eq!(settings.maximum_drawdown_pct, 10.0);
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn excludes_only_after_minimum_sample_count() {
+        let settings = NewsPerformanceSettings::default();
+        let insufficient = SignalMetrics {
+            samples: 19,
+            hit_rate_pct: 0.0,
+            average_directional_return_pct: -10.0,
+            maximum_drawdown_pct: 50.0,
+        };
+        assert!(metrics_exclusion_reason(&settings, "삼성전자", &insufficient).is_none());
+
+        let poor = SignalMetrics {
+            samples: 20,
+            hit_rate_pct: 40.0,
+            average_directional_return_pct: -1.0,
+            maximum_drawdown_pct: 12.0,
+        };
+        let reason = metrics_exclusion_reason(&settings, "삼성전자", &poor);
+        assert!(reason.unwrap_or_default().contains("적중률"));
     }
 }

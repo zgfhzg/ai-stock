@@ -75,6 +75,8 @@ make up
 - `GET /api/news/performance`: 뉴스 기반 결정의 1일, 3일, 5일 성과 기록 조회
 - `GET /api/news/performance/summary`: 방향 적중률, 평균 수익률, 최대 낙폭 요약
 - `POST /api/news/performance/evaluate`: 평가 시각이 지난 성과 항목을 현재가로 갱신
+- `GET /api/news/performance/settings`: 성과 기반 자동 제외 기준 조회
+- `PUT /api/news/performance/settings`: 최소 표본, 적중률, 평균 수익률, 최대 낙폭 기준 저장
 - `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
 - `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/news/analyze`: 미분석 뉴스 최대 한 배치를 AI로 분석

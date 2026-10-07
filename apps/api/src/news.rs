@@ -956,6 +956,7 @@ pub async fn generate_news_trade_decisions(state: &AppState) -> ApiResult<Vec<Ne
 
     let holdings = load_news_holdings(state).await?;
     let risk = crate::risk_settings::get(state)?;
+    let performance_policy = crate::news_performance::exclusion_policy(state)?;
     let portfolio_value = holdings
         .values()
         .map(|holding| holding.current_value)
@@ -974,6 +975,19 @@ pub async fn generate_news_trade_decisions(state: &AppState) -> ApiResult<Vec<Ne
             remaining_budget,
             now,
         );
+        if decision.risk_approved {
+            if let Some(reason) = performance_policy.exclusion_reason(
+                &decision.symbol,
+                &decision.name,
+                &decision.event_keys,
+            ) {
+                decision.status = "blocked".to_string();
+                decision.risk_approved = false;
+                decision.block_reason = Some(reason);
+                decision.quantity = 0;
+                decision.order_amount_krw = 0;
+            }
+        }
         if decision.risk_approved {
             if existing_order_count.saturating_add(approved_order_count)
                 >= risk.daily_max_order_count
