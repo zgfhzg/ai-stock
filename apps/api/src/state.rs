@@ -27,6 +27,7 @@ pub struct CachedToken {
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let monitor_interval_seconds = config.auto_rule_monitor_interval_seconds;
+        let auto_universe_mode = config.auto_universe_mode.clone();
         Self {
             config: Arc::new(config),
             http: Client::new(),
@@ -36,6 +37,7 @@ impl AppState {
             ))),
             auto_monitor: Arc::new(Mutex::new(AutoMonitorRuntime::new(
                 monitor_interval_seconds,
+                auto_universe_mode,
             ))),
             news_collector: Arc::new(Mutex::new(NewsCollectorRuntime::default())),
         }

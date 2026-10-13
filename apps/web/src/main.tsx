@@ -19,6 +19,7 @@ type SystemStatus = {
   api: string;
   trading_mode: string;
   auto_trade_mode: string;
+  auto_universe_mode: string;
   live_trading_enabled: boolean;
   kis: {
     configured: boolean;
@@ -116,6 +117,7 @@ type AutoDecision = {
 
 type AutoRunResponse = {
   mode: string;
+  universe_mode: string;
   executed: boolean;
   summary: {
     total: number;
@@ -135,6 +137,7 @@ type AutoRunLog = {
 
 type AutoMonitorStatus = {
   running: boolean;
+  universe_mode: string;
   interval_seconds: number;
   last_started_at_unix?: number | null;
   last_stopped_at_unix?: number | null;
@@ -2124,7 +2127,7 @@ function App() {
                 ))}
               </div>
             ) : (
-              <div className="log-line">관심종목 기준으로 현재가를 확인하고 AI 판단을 한 번 실행합니다.</div>
+              <div className="log-line">국내장 전체 뉴스에서 발굴한 AI 후보의 현재가를 확인하고 판단합니다.</div>
             )}
           </div>
 
@@ -2811,8 +2814,9 @@ function formatAutoMonitorDetail(
     return `최근 오류: ${monitor.last_error}`;
   }
   const mode = status?.auto_trade_mode === "paper_auto" ? "모의 자동주문" : "추천 전용";
+  const universe = status?.auto_universe_mode === "watchlist" ? "관심종목" : "국내장 AI 후보";
   const interval = monitor?.interval_seconds ?? 30;
-  return `${mode} · 총 운용예산 ${formatKrw(Number(budget || 0))} · ${interval}초마다 관심종목 판단`;
+  return `${mode} · 총 운용예산 ${formatKrw(Number(budget || 0))} · ${interval}초마다 ${universe} 판단`;
 }
 
 function formatLastAutoRun(logs: AutoRunLog[]) {

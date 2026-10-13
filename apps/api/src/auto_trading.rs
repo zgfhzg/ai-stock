@@ -30,6 +30,7 @@ pub struct AutoRunRequest {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AutoRunResponse {
     pub mode: String,
+    pub universe_mode: String,
     pub executed: bool,
     pub summary: AutoRunSummary,
     pub decisions: Vec<AutoDecision>,
@@ -76,6 +77,7 @@ pub struct AutoMonitorSettings {
 #[derive(Clone, Serialize)]
 pub struct AutoMonitorStatus {
     pub running: bool,
+    pub universe_mode: String,
     pub interval_seconds: u64,
     pub last_started_at_unix: Option<u64>,
     pub last_stopped_at_unix: Option<u64>,
@@ -92,11 +94,12 @@ pub struct AutoMonitorRuntime {
 }
 
 impl AutoMonitorRuntime {
-    pub fn new(interval_seconds: u64) -> Self {
+    pub fn new(interval_seconds: u64, universe_mode: String) -> Self {
         Self {
             handle: None,
             status: AutoMonitorStatus {
                 running: false,
+                universe_mode,
                 interval_seconds: interval_seconds.clamp(10, 3600),
                 last_started_at_unix: None,
                 last_stopped_at_unix: None,
@@ -125,10 +128,7 @@ struct AutoRunLogEntry<'a> {
 }
 
 pub async fn run_once(state: &AppState, request: AutoRunRequest) -> ApiResult<AutoRunResponse> {
-    let items = watchlist::list(state)?;
-    if items.is_empty() {
-        return validation_error("empty_watchlist", "Watchlist is empty.");
-    }
+    let items = auto_universe(state)?;
 
     let execute = request.execute.unwrap_or(false) && state.config.auto_trade_mode == "paper_auto";
     let holdings = load_holdings(state).await?;
@@ -167,6 +167,7 @@ pub async fn run_once(state: &AppState, request: AutoRunRequest) -> ApiResult<Au
     let summary = summarize(&decisions, orders_count);
     let response = AutoRunResponse {
         mode: state.config.auto_trade_mode.clone(),
+        universe_mode: state.config.auto_universe_mode.clone(),
         executed: execute,
         summary,
         decisions,
@@ -224,7 +225,7 @@ pub async fn start_monitor(
             "AUTO_TRADE_MODE must be paper_auto before starting AI monitoring.",
         );
     }
-    if watchlist::list(state)?.is_empty() {
+    if state.config.auto_universe_mode == "watchlist" && watchlist::list(state)?.is_empty() {
         return validation_error("empty_watchlist", "Watchlist is empty.");
     }
 
@@ -256,6 +257,33 @@ pub async fn start_monitor(
         monitor_loop(worker_state, interval_seconds).await;
     }));
     Ok(runtime.status.clone())
+}
+
+fn auto_universe(state: &AppState) -> ApiResult<Vec<WatchlistItem>> {
+    if state.config.auto_universe_mode == "watchlist" {
+        return watchlist::list(state);
+    }
+
+    let mut candidates = crate::news::ai_stock_candidates(state)?
+        .into_iter()
+        .filter(|candidate| candidate.candidate_status == "active")
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .outlook
+            .confidence
+            .total_cmp(&left.outlook.confidence)
+            .then_with(|| left.symbol.cmp(&right.symbol))
+    });
+
+    Ok(candidates
+        .into_iter()
+        .take(state.config.auto_market_candidate_limit)
+        .map(|candidate| WatchlistItem {
+            symbol: candidate.symbol,
+            name: candidate.name,
+        })
+        .collect())
 }
 
 pub async fn stop_monitor(state: &AppState) -> AutoMonitorStatus {

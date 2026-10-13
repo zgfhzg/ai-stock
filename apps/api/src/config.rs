@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub overseas_order_log_path: String,
     pub crypto_order_log_path: String,
     pub auto_trade_mode: String,
+    pub auto_universe_mode: String,
+    pub auto_market_candidate_limit: usize,
     pub auto_rules_path: String,
     pub auto_rule_check_log_path: String,
     pub auto_rule_state_path: String,
@@ -91,6 +93,11 @@ impl AppConfig {
                 "../../data/crypto-orders.jsonl",
             ),
             auto_trade_mode: read_env("AUTO_TRADE_MODE", "recommend"),
+            auto_universe_mode: read_env("AUTO_UNIVERSE_MODE", "market"),
+            auto_market_candidate_limit: read_env("AUTO_MARKET_CANDIDATE_LIMIT", "20")
+                .parse::<usize>()
+                .unwrap_or(20)
+                .clamp(1, 50),
             auto_rules_path: read_env("AUTO_RULES_PATH", "../../data/auto-rules.json"),
             auto_rule_check_log_path: read_env(
                 "AUTO_RULE_CHECK_LOG_PATH",
