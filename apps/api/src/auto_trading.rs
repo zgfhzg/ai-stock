@@ -128,7 +128,7 @@ struct AutoRunLogEntry<'a> {
 }
 
 pub async fn run_once(state: &AppState, request: AutoRunRequest) -> ApiResult<AutoRunResponse> {
-    let items = auto_universe(state)?;
+    let items = auto_universe(state).await?;
 
     let execute = request.execute.unwrap_or(false) && state.config.auto_trade_mode == "paper_auto";
     let holdings = load_holdings(state).await?;
@@ -259,9 +259,25 @@ pub async fn start_monitor(
     Ok(runtime.status.clone())
 }
 
-fn auto_universe(state: &AppState) -> ApiResult<Vec<WatchlistItem>> {
+async fn auto_universe(state: &AppState) -> ApiResult<Vec<WatchlistItem>> {
     if state.config.auto_universe_mode == "watchlist" {
         return watchlist::list(state);
+    }
+
+    let mut outlooks = crate::news::daily_outlooks(state)?;
+    if outlooks.is_empty() {
+        outlooks = match crate::news::generate_daily_outlooks(state).await {
+            Ok(outlooks) => outlooks,
+            Err((_, Json(error))) if error.code == "no_daily_news_events" => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        };
+    }
+    if outlooks.iter().any(|outlook| {
+        outlook.market_checked_at_unix.is_none() || outlook.decision_status == "market_data_pending"
+    }) {
+        crate::news::refresh_outlook_market_data(state).await?;
     }
 
     let mut candidates = crate::news::ai_stock_candidates(state)?
