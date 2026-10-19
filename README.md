@@ -79,6 +79,8 @@ make up
 - `GET /api/news/performance/settings`: 성과 기반 자동 제외 기준 조회
 - `PUT /api/news/performance/settings`: 최소 표본, 적중률, 평균 수익률, 최대 낙폭 기준 저장
 - `GET /api/news/usage`: 오늘, 최근 7일, 이번 달 AI 뉴스 분석 호출량, 토큰, 예상 비용 조회
+- `GET /api/news/settings`: 뉴스 분석 유효기간, 일일 건수·비용, 배치·재시도 설정 조회
+- `PUT /api/news/settings`: 뉴스 분석 처리 설정 저장
 - `GET /api/news/status`: 뉴스 수집 상태와 DB 용량 조회
 - `POST /api/news/collect`: 뉴스 수동 수집 및 보관기간 초과 데이터 정리
 - `POST /api/news/analyze`: 미분석 뉴스 최대 한 배치를 AI로 분석
@@ -99,7 +101,9 @@ make up
 
 뉴스 수집기는 기본 24시간 간격으로 실행되며 원문과 이미지는 저장하지 않습니다. 제목, 링크, 출처, 발행시각과 최대 500자의 피드 요약만 SQLite에 저장합니다. URL 기준 중복 제거, 하루 300건 제한, 90일 보관, DB 최대 1GB가 기본값이며 `.env`의 `NEWS_COLLECTION_INTERVAL_HOURS`, `NEWS_DAILY_LIMIT`, `NEWS_RETENTION_DAYS`, `NEWS_MAX_DATABASE_BYTES`로 조정할 수 있습니다.
 
-수집 직후 Strategy 서비스는 OpenAI Structured Outputs로 뉴스 요약, 감성, 중요도, 영향 기간과 관련 종목을 분석합니다. 모델 호출 실패나 불완전 응답은 주문 신호로 사용하지 않고 실패 상태로 기록하며 최대 3회까지만 재시도합니다. 모델과 배치 크기는 `OPENAI_NEWS_MODEL`, `NEWS_ANALYSIS_BATCH_SIZE`로 설정합니다.
+수집 직후 Strategy 서비스는 OpenAI Structured Outputs로 뉴스 요약, 감성, 중요도, 영향 기간과 관련 종목을 분석합니다. 기본 분석 유효기간은 최근 7일이며 오래된 미분석 뉴스는 `expired`로 정리합니다. 최신 뉴스는 10건 단위로 반복 처리하되 하루 200건 또는 예상 비용 $0.02에 도달하면 중단합니다. 실패 뉴스는 신규 뉴스와 분리된 배치에서 15분부터 지수 백오프로 최대 3회 재시도합니다. 분석 작업자는 기본 5분마다 남은 대기열을 확인합니다.
+
+분석 유효기간, 일일 건수·비용 상한, 배치 크기, 작업 주기와 재시도 정책은 대시보드에서 변경할 수 있으며 `NEWS_ANALYSIS_SETTINGS_PATH`에 저장됩니다. 환경변수 `NEWS_ANALYSIS_FRESHNESS_DAYS`, `NEWS_ANALYSIS_DAILY_LIMIT`, `NEWS_ANALYSIS_DAILY_COST_LIMIT_USD`, `NEWS_ANALYSIS_BATCH_SIZE`, `NEWS_ANALYSIS_WORKER_INTERVAL_MINUTES`, `NEWS_ANALYSIS_RETRY_BASE_MINUTES`, `NEWS_ANALYSIS_MAX_ATTEMPTS`는 저장된 설정이 없을 때의 초기값입니다.
 
 분석된 뉴스는 제목 핵심어, 관련 종목, 72시간 발행 구간을 기준으로 같은 사건끼리 묶습니다. 이벤트별 기사 수와 고유 출처 수를 분리하고, 종목별 감성은 기사 개수가 아니라 이벤트별 평균을 사용해 반복 보도가 신호를 부풀리지 않도록 합니다. 이벤트의 근거 신뢰도는 출처 다양성, 분석 완료율, 최고 중요도를 반영하며 매매 성공 확률을 의미하지 않습니다.
 

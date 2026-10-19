@@ -19,6 +19,7 @@ use crate::{
         self, AiStockCandidate, DailyStockOutlook, NewsAnalysisRun, NewsAnalysisUsageSummary,
         NewsArticle, NewsCollectorStatus, NewsEventGroup, NewsTradeDecision, StockNewsGroup,
     },
+    news_analysis_settings::{self, NewsAnalysisSettings},
     news_performance::{
         self, NewsPerformancePoint, NewsPerformanceRun, NewsPerformanceSettings,
         NewsPerformanceSummary,
@@ -110,6 +111,10 @@ pub fn app_router() -> Router<AppState> {
             get(news_performance_settings).put(update_news_performance_settings),
         )
         .route("/api/news/status", get(news_status))
+        .route(
+            "/api/news/settings",
+            get(news_analysis_settings).put(update_news_analysis_settings),
+        )
         .route("/api/news/usage", get(news_analysis_usage))
         .route("/api/news/collect", post(collect_news))
         .route("/api/news/analyze", post(analyze_news))
@@ -401,6 +406,21 @@ async fn refresh_news_outlook_market_data(
 
 async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {
     Ok(Json(news::status(&state).await?))
+}
+
+async fn news_analysis_settings(
+    State(state): State<AppState>,
+) -> ApiResult<Json<NewsAnalysisSettings>> {
+    Ok(Json(news_analysis_settings::get(&state)?))
+}
+
+async fn update_news_analysis_settings(
+    State(state): State<AppState>,
+    Json(settings): Json<NewsAnalysisSettings>,
+) -> ApiResult<Json<NewsAnalysisSettings>> {
+    let settings = news_analysis_settings::save(&state, settings)?;
+    news::reschedule_analysis(&state, &settings).await;
+    Ok(Json(settings))
 }
 
 async fn collect_news(State(state): State<AppState>) -> ApiResult<Json<NewsCollectorStatus>> {

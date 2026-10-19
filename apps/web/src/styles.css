@@ -1018,6 +1018,7 @@ h2 {
 .news-trade-decisions,
 .news-performance,
 .api-usage,
+.analysis-settings,
 .performance-settings {
   margin-bottom: 12px;
 }
@@ -1104,12 +1105,14 @@ h2 {
   margin-top: 8px;
 }
 
+.analysis-settings,
 .performance-settings {
   padding: 10px 0;
   border-top: 1px solid #e3e6df;
   border-bottom: 1px solid #e3e6df;
 }
 
+.analysis-settings-form,
 .performance-settings-form {
   display: grid;
   grid-template-columns: minmax(110px, 0.8fr) repeat(4, minmax(120px, 1fr)) minmax(100px, 0.8fr);
@@ -1118,18 +1121,25 @@ h2 {
   margin-top: 8px;
 }
 
+.analysis-settings-form {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.analysis-settings-form label,
 .performance-settings-form label {
   min-width: 0;
   display: grid;
   gap: 5px;
 }
 
+.analysis-settings-form label > span,
 .performance-settings-form label > span {
   color: #657066;
   font-size: 12px;
   font-weight: 700;
 }
 
+.analysis-settings-form input[type="number"],
 .performance-settings-form input[type="number"] {
   min-width: 0;
   width: 100%;
@@ -1141,6 +1151,7 @@ h2 {
   color: #17211a;
 }
 
+.analysis-settings-form button,
 .performance-settings-form button {
   height: 38px;
   border: 1px solid #245f45;
@@ -1775,6 +1786,7 @@ h2 {
     display: none;
   }
 
+  .analysis-settings-form,
   .performance-settings-form {
     grid-template-columns: 1fr 1fr;
   }
@@ -1860,6 +1872,7 @@ h2 {
   .performance-summary-grid,
   .performance-list,
   .performance-breakdowns,
+  .analysis-settings-form,
   .performance-settings-form {
     grid-template-columns: 1fr;
   }

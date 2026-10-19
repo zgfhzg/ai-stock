@@ -17,6 +17,7 @@ use tokio::{
 
 use crate::{
     error::{api_error, ApiResult},
+    news_analysis_settings::{self, NewsAnalysisSettings},
     orders::{self, OrderRequest},
     state::AppState,
     stocks,
@@ -56,6 +57,12 @@ pub struct NewsAnalysisRun {
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Clone, Copy)]
+enum AnalysisQueue {
+    Pending,
+    Retry,
 }
 
 #[derive(Clone, Serialize)]
@@ -207,19 +214,24 @@ pub struct NewsCollectorStatus {
     pub analyzed_count: u64,
     pub pending_analysis_count: u64,
     pub failed_analysis_count: u64,
+    pub expired_analysis_count: u64,
+    pub analyzing: bool,
+    pub next_analysis_at_unix: Option<u64>,
     pub last_analysis_error: Option<String>,
     pub analysis_enabled: bool,
 }
 
 pub struct NewsCollectorRuntime {
-    handle: Option<JoinHandle<()>>,
+    collector_handle: Option<JoinHandle<()>>,
+    analysis_handle: Option<JoinHandle<()>>,
     status: NewsCollectorStatus,
 }
 
 impl Default for NewsCollectorRuntime {
     fn default() -> Self {
         Self {
-            handle: None,
+            collector_handle: None,
+            analysis_handle: None,
             status: NewsCollectorStatus {
                 running: false,
                 collecting: false,
@@ -237,6 +249,9 @@ impl Default for NewsCollectorRuntime {
                 analyzed_count: 0,
                 pending_analysis_count: 0,
                 failed_analysis_count: 0,
+                expired_analysis_count: 0,
+                analyzing: false,
+                next_analysis_at_unix: None,
                 last_analysis_error: None,
                 analysis_enabled: false,
             },
@@ -271,7 +286,8 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
              analysis_model TEXT,
              analyzed_at_unix INTEGER,
              analysis_error TEXT,
-             analysis_attempts INTEGER NOT NULL DEFAULT 0
+             analysis_attempts INTEGER NOT NULL DEFAULT 0,
+             analysis_next_retry_at_unix INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_news_published
              ON news_articles(published_at_unix DESC);
@@ -337,13 +353,18 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
          );",
     )?;
     ensure_analysis_columns(&connection)?;
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_analysis_queue
+         ON news_articles(analysis_status, analysis_next_retry_at_unix, published_at_unix DESC)",
+        [],
+    )?;
     ensure_outlook_columns(&connection)?;
     Ok(())
 }
 
 pub async fn start_collector(state: &AppState) {
     let mut runtime = state.news_collector.lock().await;
-    if runtime.handle.is_some() {
+    if runtime.collector_handle.is_some() || runtime.analysis_handle.is_some() {
         return;
     }
 
@@ -354,9 +375,13 @@ pub async fn start_collector(state: &AppState) {
     runtime.status.daily_limit = state.config.news_daily_limit.max(1);
     runtime.status.max_database_bytes = state.config.news_max_database_bytes.max(1_048_576);
     runtime.status.analysis_enabled = state.config.news_analysis_enabled;
+    let analysis_settings = news_analysis_settings::get(state)
+        .unwrap_or_else(|_| NewsAnalysisSettings::from_config(&state.config));
+    runtime.status.next_analysis_at_unix =
+        Some(unix_now() + analysis_settings.worker_interval_minutes.clamp(1, 1_440) * 60);
 
     let worker_state = state.clone();
-    runtime.handle = Some(tokio::spawn(async move {
+    runtime.collector_handle = Some(tokio::spawn(async move {
         loop {
             if let Err((_, Json(error))) = collect_once(&worker_state).await {
                 tracing::warn!("news collection failed: {}", error.message);
@@ -364,6 +389,32 @@ pub async fn start_collector(state: &AppState) {
             sleep(Duration::from_secs(interval_hours * 3600)).await;
         }
     }));
+
+    let analysis_state = state.clone();
+    runtime.analysis_handle = Some(tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(60)).await;
+            let due = {
+                let runtime = analysis_state.news_collector.lock().await;
+                runtime
+                    .status
+                    .next_analysis_at_unix
+                    .is_some_and(|next| next <= unix_now())
+            };
+            if !due {
+                continue;
+            }
+            if let Err((_, Json(error))) = drain_analysis_backlog(&analysis_state).await {
+                tracing::warn!("news analysis worker failed: {}", error.message);
+            }
+        }
+    }));
+}
+
+pub async fn reschedule_analysis(state: &AppState, settings: &NewsAnalysisSettings) {
+    let mut runtime = state.news_collector.lock().await;
+    runtime.status.next_analysis_at_unix =
+        Some(unix_now() + settings.worker_interval_minutes.clamp(1, 1_440) * 60);
 }
 
 pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
@@ -382,11 +433,7 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
     }
 
     let result = fetch_and_store(state).await;
-    let analysis_result = if result.is_ok() && state.config.news_analysis_enabled {
-        Some(analyze_pending(state).await)
-    } else {
-        None
-    };
+    let should_schedule_analysis = result.is_ok() && state.config.news_analysis_enabled;
     let mut runtime = state.news_collector.lock().await;
     runtime.status.collecting = false;
     runtime.status.last_finished_at_unix = Some(unix_now());
@@ -396,11 +443,18 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
     match result {
         Ok(inserted) => {
             runtime.status.last_inserted_count = inserted;
-            runtime.status.last_analysis_error = analysis_result
-                .and_then(Result::err)
-                .map(|(_, Json(error))| error.message);
             refresh_storage_stats(state, &mut runtime.status)?;
-            Ok(runtime.status.clone())
+            let status = runtime.status.clone();
+            drop(runtime);
+            if should_schedule_analysis {
+                let analysis_state = state.clone();
+                tokio::spawn(async move {
+                    if let Err((_, Json(error))) = drain_analysis_backlog(&analysis_state).await {
+                        tracing::warn!("news analysis after collection failed: {}", error.message);
+                    }
+                });
+            }
+            Ok(status)
         }
         Err(error) => {
             runtime.status.last_error = Some(error.to_string());
@@ -1488,19 +1542,92 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
         ));
     }
 
-    let articles = pending_articles(state)?;
+    let settings = news_analysis_settings::get(state)?;
+    expire_stale_articles(state, &settings)?;
+    if !begin_analysis(state).await {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "news_analysis_in_progress",
+            "News analysis is already running.",
+        ));
+    }
+
+    let mut result = analyze_next_batch(state, &settings, AnalysisQueue::Pending).await;
+    if matches!(&result, Ok(run) if run.requested == 0) {
+        result = analyze_next_batch(state, &settings, AnalysisQueue::Retry).await;
+    }
+    finish_analysis(state, result.as_ref().err()).await;
+    result
+}
+
+async fn drain_analysis_backlog(state: &AppState) -> ApiResult<()> {
+    if !state.config.news_analysis_enabled {
+        return Ok(());
+    }
+
+    let settings = news_analysis_settings::get(state)?;
+    expire_stale_articles(state, &settings)?;
+    if !begin_analysis(state).await {
+        return Ok(());
+    }
+
+    let mut result = match analyze_next_batch(state, &settings, AnalysisQueue::Retry).await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        finish_analysis(state, result.as_ref().err()).await;
+        return result;
+    }
+    loop {
+        match analyze_next_batch(state, &settings, AnalysisQueue::Pending).await {
+            Ok(run) if run.requested == 0 => break,
+            Ok(_) => {}
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        }
+    }
+    finish_analysis(state, result.as_ref().err()).await;
+    result
+}
+
+async fn begin_analysis(state: &AppState) -> bool {
+    let mut runtime = state.news_collector.lock().await;
+    if runtime.status.analyzing {
+        return false;
+    }
+    runtime.status.analyzing = true;
+    true
+}
+
+async fn finish_analysis(
+    state: &AppState,
+    error: Option<&(StatusCode, Json<crate::error::ApiError>)>,
+) {
+    let mut runtime = state.news_collector.lock().await;
+    runtime.status.analyzing = false;
+    runtime.status.last_analysis_error = error.map(|(_, Json(error))| error.message.clone());
+    if let Ok(settings) = news_analysis_settings::get(state) {
+        runtime.status.next_analysis_at_unix =
+            Some(unix_now() + settings.worker_interval_minutes.clamp(1, 1_440) * 60);
+    }
+}
+
+async fn analyze_next_batch(
+    state: &AppState,
+    settings: &NewsAnalysisSettings,
+    queue: AnalysisQueue,
+) -> ApiResult<NewsAnalysisRun> {
+    let batch_limit = available_analysis_batch_size(state, settings)?;
+    if batch_limit == 0 {
+        return Ok(empty_analysis_run());
+    }
+
+    let articles = pending_articles(state, settings, batch_limit, queue)?;
     if articles.is_empty() {
-        return Ok(NewsAnalysisRun {
-            requested: 0,
-            analyzed: 0,
-            failed: 0,
-            model: None,
-            elapsed_ms: 0,
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            estimated_cost_usd: None,
-        });
+        return Ok(empty_analysis_run());
     }
 
     let requested = articles.len();
@@ -1548,7 +1675,8 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
                             sentiment_score = ?3, importance = ?4, impact_horizon = ?5,
                             related_stocks_json = ?6, rationale = ?7, analysis_model = ?8,
                             analyzed_at_unix = ?9, analysis_error = NULL,
-                            analysis_attempts = analysis_attempts + 1
+                            analysis_attempts = analysis_attempts + 1,
+                            analysis_next_retry_at_unix = NULL
                          WHERE id = ?10",
                         params![
                             analysis.summary,
@@ -1596,7 +1724,7 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
                     tracing::warn!("failed to record news analysis usage: {record_error}");
                 }
             }
-            mark_analysis_failed(state, &articles, &error_message)?;
+            mark_analysis_failed(state, &articles, &error_message, settings)?;
             Err(api_error(
                 StatusCode::BAD_GATEWAY,
                 "news_analysis_failed",
@@ -1604,6 +1732,63 @@ pub async fn analyze_pending(state: &AppState) -> ApiResult<NewsAnalysisRun> {
             ))
         }
     }
+}
+
+fn empty_analysis_run() -> NewsAnalysisRun {
+    NewsAnalysisRun {
+        requested: 0,
+        analyzed: 0,
+        failed: 0,
+        model: None,
+        elapsed_ms: 0,
+        input_tokens: None,
+        output_tokens: None,
+        total_tokens: None,
+        estimated_cost_usd: None,
+    }
+}
+
+fn available_analysis_batch_size(
+    state: &AppState,
+    settings: &NewsAnalysisSettings,
+) -> ApiResult<usize> {
+    let connection = open_database(state).map_err(database_error)?;
+    let now = unix_now() as i64;
+    let today_start = korea_day_key(now) * 86_400 - 9 * 3_600;
+    let (requested_today, spent_today): (u64, f64) = connection
+        .query_row(
+            "SELECT COALESCE(SUM(requested_count), 0),
+                    COALESCE(SUM(estimated_cost_usd), 0)
+             FROM news_analysis_runs WHERE started_at_unix >= ?1",
+            [today_start],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(database_error)?;
+    let remaining_articles = settings.daily_article_limit.saturating_sub(requested_today);
+    if remaining_articles == 0 || spent_today >= settings.daily_cost_limit_usd {
+        return Ok(0);
+    }
+
+    let historical_cost_per_article = connection
+        .query_row(
+            "SELECT SUM(estimated_cost_usd) / NULLIF(SUM(analyzed_count), 0)
+             FROM news_analysis_runs
+             WHERE estimated_cost_usd IS NOT NULL AND analyzed_count > 0",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .map_err(database_error)?
+        .unwrap_or(0.0001)
+        .max(0.000001);
+    let affordable_articles = ((settings.daily_cost_limit_usd - spent_today)
+        / historical_cost_per_article)
+        .floor()
+        .max(0.0) as u64;
+
+    Ok(settings
+        .batch_size
+        .min(remaining_articles as usize)
+        .min(affordable_articles as usize))
 }
 
 pub fn analysis_usage_summary(state: &AppState) -> ApiResult<NewsAnalysisUsageSummary> {
@@ -1899,6 +2084,7 @@ fn refresh_storage_stats(state: &AppState, status: &mut NewsCollectorStatus) -> 
     status.analyzed_count = count_by_analysis_status(&connection, "analyzed")?;
     status.pending_analysis_count = count_by_analysis_status(&connection, "pending")?;
     status.failed_analysis_count = count_by_analysis_status(&connection, "failed")?;
+    status.expired_analysis_count = count_by_analysis_status(&connection, "expired")?;
     Ok(())
 }
 
@@ -1912,45 +2098,103 @@ fn count_by_analysis_status(connection: &Connection, value: &str) -> ApiResult<u
         .map_err(database_error)
 }
 
-fn pending_articles(state: &AppState) -> ApiResult<Vec<NewsArticleInput>> {
+fn pending_articles(
+    state: &AppState,
+    settings: &NewsAnalysisSettings,
+    limit: usize,
+    queue: AnalysisQueue,
+) -> ApiResult<Vec<NewsArticleInput>> {
     let connection = open_database(state).map_err(database_error)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT id, title, source, summary FROM news_articles
-             WHERE analysis_status IN ('pending', 'failed') AND analysis_attempts < 3
-             ORDER BY published_at_unix DESC LIMIT ?1",
-        )
-        .map_err(database_error)?;
-    let rows = statement
-        .query_map([state.config.news_analysis_batch_size as i64], |row| {
-            Ok(NewsArticleInput {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                source: row.get(2)?,
-                summary: row.get(3)?,
-            })
-        })
-        .map_err(database_error)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+    let now = unix_now() as i64;
+    let cutoff = now - settings.freshness_days as i64 * 86_400;
+    match queue {
+        AnalysisQueue::Pending => {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, title, source, summary FROM news_articles
+                     WHERE analysis_status = 'pending' AND published_at_unix >= ?1
+                     ORDER BY published_at_unix DESC LIMIT ?2",
+                )
+                .map_err(database_error)?;
+            let rows = statement
+                .query_map([cutoff, limit as i64], |row| {
+                    Ok(NewsArticleInput {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        source: row.get(2)?,
+                        summary: row.get(3)?,
+                    })
+                })
+                .map_err(database_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+        }
+        AnalysisQueue::Retry => {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, title, source, summary FROM news_articles
+                     WHERE analysis_status = 'failed'
+                       AND analysis_attempts < ?1
+                       AND published_at_unix >= ?2
+                       AND COALESCE(analysis_next_retry_at_unix, 0) <= ?3
+                     ORDER BY COALESCE(analysis_next_retry_at_unix, 0), published_at_unix DESC
+                     LIMIT ?4",
+                )
+                .map_err(database_error)?;
+            let rows = statement
+                .query_map(
+                    params![settings.max_attempts, cutoff, now, limit as i64],
+                    |row| {
+                        Ok(NewsArticleInput {
+                            id: row.get(0)?,
+                            title: row.get(1)?,
+                            source: row.get(2)?,
+                            summary: row.get(3)?,
+                        })
+                    },
+                )
+                .map_err(database_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+        }
+    }
 }
 
 fn mark_analysis_failed(
     state: &AppState,
     articles: &[NewsArticleInput],
     error: &str,
+    settings: &NewsAnalysisSettings,
 ) -> ApiResult<()> {
     let connection = open_database(state).map_err(database_error)?;
     let error = error.chars().take(500).collect::<String>();
+    let now = unix_now() as i64;
+    let base_delay_seconds = settings.retry_base_minutes as i64 * 60;
     for article in articles {
         connection
             .execute(
                 "UPDATE news_articles SET analysis_status = 'failed', analysis_error = ?1,
-                 analysis_attempts = analysis_attempts + 1 WHERE id = ?2",
-                params![error, article.id],
+                 analysis_next_retry_at_unix = ?2 + (?3 * (1 << MIN(analysis_attempts, 10))),
+                 analysis_attempts = analysis_attempts + 1 WHERE id = ?4",
+                params![error, now, base_delay_seconds, article.id],
             )
             .map_err(database_error)?;
     }
     Ok(())
+}
+
+fn expire_stale_articles(state: &AppState, settings: &NewsAnalysisSettings) -> ApiResult<usize> {
+    let connection = open_database(state).map_err(database_error)?;
+    let cutoff = unix_now() as i64 - settings.freshness_days as i64 * 86_400;
+    connection
+        .execute(
+            "UPDATE news_articles
+             SET analysis_status = 'expired',
+                 analysis_error = 'Analysis window expired before processing',
+                 analysis_next_retry_at_unix = NULL
+             WHERE analysis_status IN ('pending', 'failed')
+               AND published_at_unix < ?1",
+            [cutoff],
+        )
+        .map_err(database_error)
 }
 
 fn ensure_analysis_columns(connection: &Connection) -> anyhow::Result<()> {
@@ -1971,6 +2215,7 @@ fn ensure_analysis_columns(connection: &Connection) -> anyhow::Result<()> {
         ("analyzed_at_unix", "INTEGER"),
         ("analysis_error", "TEXT"),
         ("analysis_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("analysis_next_retry_at_unix", "INTEGER"),
     ];
     drop(statement);
     for (name, definition) in columns {
@@ -2071,6 +2316,63 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
 
+    fn queue_test_state() -> AppState {
+        let mut config = crate::config::AppConfig::load();
+        let unique = format!(
+            "ai-stock-news-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&directory).expect("test directory");
+        config.news_db_path = directory.join("news.db").to_string_lossy().to_string();
+        config.news_analysis_settings_path = directory
+            .join("news-analysis-settings.json")
+            .to_string_lossy()
+            .to_string();
+        let state = AppState::new(config);
+        initialize(&state).expect("news database");
+        state
+    }
+
+    fn api_ok<T>(result: ApiResult<T>) -> T {
+        match result {
+            Ok(value) => value,
+            Err((_, Json(error))) => panic!("{}", error.message),
+        }
+    }
+
+    fn insert_queue_article(
+        state: &AppState,
+        id: i64,
+        status: &str,
+        published_at_unix: i64,
+        attempts: u32,
+        retry_at_unix: Option<i64>,
+    ) {
+        open_database(state)
+            .expect("database")
+            .execute(
+                "INSERT INTO news_articles
+                 (id, title, url, source, published_at_unix, collected_at_unix,
+                  analysis_status, analysis_attempts, analysis_next_retry_at_unix)
+                 VALUES (?1, ?2, ?3, 'test', ?4, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    format!("article {id}"),
+                    format!("https://example.com/queue/{id}"),
+                    published_at_unix,
+                    status,
+                    attempts,
+                    retry_at_unix,
+                ],
+            )
+            .expect("queue article");
+    }
+
     fn article(
         id: i64,
         title: &str,
@@ -2122,6 +2424,165 @@ mod tests {
             estimate_news_analysis_cost("unknown", Some(10), Some(10)),
             None
         );
+    }
+
+    #[test]
+    fn expires_news_outside_analysis_window() {
+        let state = queue_test_state();
+        let now = unix_now() as i64;
+        insert_queue_article(&state, 1, "pending", now - 8 * 86_400, 0, None);
+        insert_queue_article(&state, 2, "pending", now - 86_400, 0, None);
+        let settings = NewsAnalysisSettings {
+            freshness_days: 7,
+            daily_article_limit: 200,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+
+        assert_eq!(api_ok(expire_stale_articles(&state, &settings)), 1);
+        let connection = open_database(&state).expect("database");
+        let expired: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM news_articles WHERE analysis_status = 'expired'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("expired count");
+        assert_eq!(expired, 1);
+    }
+
+    #[test]
+    fn keeps_due_retries_in_a_separate_queue() {
+        let state = queue_test_state();
+        let now = unix_now() as i64;
+        for id in 1..=10 {
+            insert_queue_article(&state, id, "pending", now - id * 60, 0, None);
+        }
+        for id in 11..=15 {
+            insert_queue_article(&state, id, "failed", now - id * 60, 1, Some(now - 1));
+        }
+        insert_queue_article(&state, 16, "failed", now - 60, 1, Some(now + 3_600));
+        let settings = NewsAnalysisSettings {
+            freshness_days: 7,
+            daily_article_limit: 200,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+
+        let pending = api_ok(pending_articles(
+            &state,
+            &settings,
+            10,
+            AnalysisQueue::Pending,
+        ));
+        let retries = api_ok(pending_articles(
+            &state,
+            &settings,
+            10,
+            AnalysisQueue::Retry,
+        ));
+        assert_eq!(pending.len(), 10);
+        assert!(pending.iter().all(|article| article.id <= 10));
+        assert_eq!(retries.len(), 5);
+        assert!(retries
+            .iter()
+            .all(|article| (11..=15).contains(&article.id)));
+    }
+
+    #[test]
+    fn schedules_failed_analysis_with_exponential_backoff() {
+        let state = queue_test_state();
+        let now = unix_now() as i64;
+        insert_queue_article(&state, 1, "pending", now, 0, None);
+        let settings = NewsAnalysisSettings {
+            freshness_days: 7,
+            daily_article_limit: 200,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+        let article = NewsArticleInput {
+            id: 1,
+            title: "article".to_string(),
+            source: "test".to_string(),
+            summary: None,
+        };
+
+        api_ok(mark_analysis_failed(
+            &state,
+            std::slice::from_ref(&article),
+            "timeout",
+            &settings,
+        ));
+        let connection = open_database(&state).expect("database");
+        let (attempts, first_retry): (u32, i64) = connection
+            .query_row(
+                "SELECT analysis_attempts, analysis_next_retry_at_unix
+                 FROM news_articles WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("first retry");
+        assert_eq!(attempts, 1);
+        assert!((899..=901).contains(&(first_retry - now)));
+
+        api_ok(mark_analysis_failed(
+            &state,
+            &[article],
+            "timeout",
+            &settings,
+        ));
+        let (attempts, second_retry): (u32, i64) = connection
+            .query_row(
+                "SELECT analysis_attempts, analysis_next_retry_at_unix
+                 FROM news_articles WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("second retry");
+        assert_eq!(attempts, 2);
+        assert!((1_799..=1_801).contains(&(second_retry - now)));
+    }
+
+    #[test]
+    fn applies_daily_article_and_cost_limits_to_batch_size() {
+        let state = queue_test_state();
+        let connection = open_database(&state).expect("database");
+        let run = NewsAnalysisRun {
+            requested: 10,
+            analyzed: 10,
+            failed: 0,
+            model: Some("gpt-4o-mini".to_string()),
+            elapsed_ms: 1_000,
+            input_tokens: Some(1_000),
+            output_tokens: Some(500),
+            total_tokens: Some(1_500),
+            estimated_cost_usd: Some(0.0007),
+        };
+        let now = unix_now() as i64;
+        record_analysis_run(&connection, now, now, "success", &run, None).expect("analysis run");
+        let mut settings = NewsAnalysisSettings {
+            freshness_days: 7,
+            daily_article_limit: 12,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+
+        assert_eq!(api_ok(available_analysis_batch_size(&state, &settings)), 2);
+        settings.daily_article_limit = 200;
+        settings.daily_cost_limit_usd = 0.0007;
+        assert_eq!(api_ok(available_analysis_batch_size(&state, &settings)), 0);
     }
 
     #[test]

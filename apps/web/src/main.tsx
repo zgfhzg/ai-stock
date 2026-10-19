@@ -156,7 +156,7 @@ type NewsArticle = {
   published_at_unix: number;
   collected_at_unix: number;
   summary?: string | null;
-  analysis_status: "pending" | "analyzed" | "failed";
+  analysis_status: "pending" | "analyzed" | "failed" | "expired";
   ai_summary?: string | null;
   sentiment?: "positive" | "neutral" | "negative" | null;
   sentiment_score?: number | null;
@@ -186,6 +186,9 @@ type NewsCollectorStatus = {
   analyzed_count: number;
   pending_analysis_count: number;
   failed_analysis_count: number;
+  expired_analysis_count: number;
+  analyzing: boolean;
+  next_analysis_at_unix?: number | null;
   last_analysis_error?: string | null;
   analysis_enabled: boolean;
 };
@@ -239,6 +242,26 @@ type NewsAnalysisUsageSummary = {
   last_7_days: NewsAnalysisUsagePeriod;
   current_month: NewsAnalysisUsagePeriod;
   recent_runs: NewsAnalysisUsageRun[];
+};
+
+type NewsAnalysisSettings = {
+  freshness_days: number;
+  daily_article_limit: number;
+  daily_cost_limit_usd: number;
+  batch_size: number;
+  worker_interval_minutes: number;
+  retry_base_minutes: number;
+  max_attempts: number;
+};
+
+const recommendedNewsAnalysisSettings: NewsAnalysisSettings = {
+  freshness_days: 7,
+  daily_article_limit: 200,
+  daily_cost_limit_usd: 0.02,
+  batch_size: 10,
+  worker_interval_minutes: 5,
+  retry_base_minutes: 15,
+  max_attempts: 3,
 };
 
 type StockNewsGroup = {
@@ -544,6 +567,8 @@ function App() {
   const [newsStatus, setNewsStatus] = React.useState<NewsCollectorStatus | null>(null);
   const [lastNewsAnalysisRun, setLastNewsAnalysisRun] = React.useState<NewsAnalysisRun | null>(null);
   const [newsAnalysisUsage, setNewsAnalysisUsage] = React.useState<NewsAnalysisUsageSummary | null>(null);
+  const [newsAnalysisSettingsForm, setNewsAnalysisSettingsForm] = React.useState(() => formatNewsAnalysisSettingsForm(recommendedNewsAnalysisSettings));
+  const [newsAnalysisSettingsSaving, setNewsAnalysisSettingsSaving] = React.useState(false);
   const [stockNewsGroups, setStockNewsGroups] = React.useState<StockNewsGroup[]>([]);
   const [selectedStockNewsSymbol, setSelectedStockNewsSymbol] = React.useState("");
   const [stockNewsTimeline, setStockNewsTimeline] = React.useState<NewsEventGroup[]>([]);
@@ -850,8 +875,9 @@ function App() {
       fetchJson<NewsPerformanceSummary>("/api/news/performance/summary"),
       fetchJson<NewsPerformanceSettings>("/api/news/performance/settings"),
       fetchJson<NewsAnalysisUsageSummary>("/api/news/usage"),
+      fetchJson<NewsAnalysisSettings>("/api/news/settings"),
     ])
-      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings, analysisUsage]) => {
+      .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings, analysisUsage, analysisSettings]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
         setStockNewsGroups(groups);
@@ -865,6 +891,7 @@ function App() {
         setNewsPerformanceSummary(performanceSummary);
         setNewsPerformanceSettingsForm(formatNewsPerformanceSettingsForm(performanceSettings));
         setNewsAnalysisUsage(analysisUsage);
+        setNewsAnalysisSettingsForm(formatNewsAnalysisSettingsForm(analysisSettings));
       })
       .catch(() => {
         setNewsEvents([]);
@@ -901,6 +928,34 @@ function App() {
       })
       .catch((error) => setError(error instanceof Error ? error.message : "뉴스 AI 분석에 실패했습니다."))
       .finally(() => setNewsAnalyzing(false));
+  }
+
+  function handleNewsAnalysisSettingsChange(
+    key: keyof typeof newsAnalysisSettingsForm,
+    value: string,
+  ) {
+    setNewsAnalysisSettingsForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function handleSaveNewsAnalysisSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    const settings = parseNewsAnalysisSettingsForm(newsAnalysisSettingsForm);
+    if (!settings) {
+      setError("뉴스 분석 설정의 입력 범위를 확인하세요.");
+      return;
+    }
+
+    setNewsAnalysisSettingsSaving(true);
+    fetchJson<NewsAnalysisSettings>("/api/news/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+      .then((saved) => setNewsAnalysisSettingsForm(formatNewsAnalysisSettingsForm(saved)))
+      .then(loadNews)
+      .catch((error) => setError(error instanceof Error ? error.message : "뉴스 분석 설정을 저장하지 못했습니다."))
+      .finally(() => setNewsAnalysisSettingsSaving(false));
   }
 
   function handleGenerateDailyOutlooks() {
@@ -1388,9 +1443,9 @@ function App() {
                   <RefreshCw size={17} />
                   <span>{newsCollecting || newsStatus?.collecting ? "수집 중" : "지금 수집"}</span>
                 </button>
-                <button type="button" onClick={handleAnalyzeNews} disabled={newsAnalyzing || !newsStatus?.analysis_enabled || !newsStatus?.pending_analysis_count}>
+                <button type="button" onClick={handleAnalyzeNews} disabled={newsAnalyzing || newsStatus?.analyzing || !newsStatus?.analysis_enabled || (!newsStatus?.pending_analysis_count && !newsStatus?.failed_analysis_count)}>
                   <Bot size={17} />
-                  <span>{newsAnalyzing ? "분석 중" : "AI 분석"}</span>
+                  <span>{newsAnalyzing || newsStatus?.analyzing ? "분석 중" : "AI 분석"}</span>
                 </button>
                 <button type="button" onClick={handleGenerateDailyOutlooks} disabled={dailyOutlooksGenerating || !newsStatus?.analysis_enabled || !newsStatus?.analyzed_count}>
                   <Bot size={17} />
@@ -1410,6 +1465,101 @@ function App() {
                 </button>
               </div>
             </div>
+            <section className="analysis-settings" aria-label="뉴스 AI 분석 처리 설정">
+              <div className="candidate-section-title">
+                <strong>뉴스 분석 처리</strong>
+                <span>{newsStatus?.analyzing ? "자동 처리 중" : `오늘 ${newsAnalysisUsage?.today.requested_articles ?? 0}/${newsAnalysisSettingsForm.daily_article_limit}건`}</span>
+              </div>
+              <form className="analysis-settings-form" onSubmit={handleSaveNewsAnalysisSettings}>
+                <label>
+                  <span>유효기간 (일)</span>
+                  <input
+                    inputMode="numeric"
+                    max="30"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.freshness_days}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("freshness_days", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>일일 최대 건수</span>
+                  <input
+                    inputMode="numeric"
+                    max="5000"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.daily_article_limit}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("daily_article_limit", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>일일 비용 상한 ($)</span>
+                  <input
+                    inputMode="decimal"
+                    max="100"
+                    min="0.001"
+                    step="0.001"
+                    type="number"
+                    value={newsAnalysisSettingsForm.daily_cost_limit_usd}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("daily_cost_limit_usd", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>배치 크기</span>
+                  <input
+                    inputMode="numeric"
+                    max="20"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.batch_size}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("batch_size", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>실행 간격 (분)</span>
+                  <input
+                    inputMode="numeric"
+                    max="1440"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.worker_interval_minutes}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("worker_interval_minutes", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>재시도 기준 (분)</span>
+                  <input
+                    inputMode="numeric"
+                    max="1440"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.retry_base_minutes}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("retry_base_minutes", event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>최대 재시도</span>
+                  <input
+                    inputMode="numeric"
+                    max="10"
+                    min="1"
+                    step="1"
+                    type="number"
+                    value={newsAnalysisSettingsForm.max_attempts}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("max_attempts", event.target.value)}
+                  />
+                </label>
+                <button type="submit" disabled={newsAnalysisSettingsSaving}>
+                  {newsAnalysisSettingsSaving ? "저장 중" : "설정 저장"}
+                </button>
+              </form>
+            </section>
             {newsAnalysisUsage ? (
               <section className="api-usage" aria-label="AI API 사용량과 예상 비용">
                 <div className="candidate-section-title">
@@ -2848,7 +2998,8 @@ function formatNewsCollectorDetail(status: NewsCollectorStatus | null) {
   if (status.last_error) return status.last_error;
   if (!status.analysis_enabled) return "뉴스 수집 정상 · AI 분석은 OPENAI_API_KEY 설정 후 활성화됩니다.";
   if (status.last_analysis_error) return `수집 정상 · AI 분석 오류: ${status.last_analysis_error}`;
-  return `${status.interval_hours}시간 간격 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count}`;
+  const analysisState = status.analyzing ? " · 자동 분석 중" : "";
+  return `${status.interval_hours}시간 수집 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count} · 만료 ${status.expired_analysis_count}${analysisState}`;
 }
 
 function formatNewsAnalysisRun(run: NewsAnalysisRun) {
@@ -2885,6 +3036,7 @@ function formatAnalysisRunStatus(status: string) {
 function formatNewsAnalysisStatus(article: NewsArticle) {
   if (article.analysis_status === "analyzed") return "AI 분석 완료";
   if (article.analysis_status === "failed") return "분석 재시도 대기";
+  if (article.analysis_status === "expired") return "분석 유효기간 만료";
   return "분석 대기";
 }
 
@@ -2984,6 +3136,54 @@ function formatNewsPerformanceSettingsForm(settings: NewsPerformanceSettings) {
     minimum_average_directional_return_pct: String(settings.minimum_average_directional_return_pct),
     maximum_drawdown_pct: String(settings.maximum_drawdown_pct),
   };
+}
+
+function formatNewsAnalysisSettingsForm(settings: NewsAnalysisSettings) {
+  return {
+    freshness_days: String(settings.freshness_days),
+    daily_article_limit: String(settings.daily_article_limit),
+    daily_cost_limit_usd: String(settings.daily_cost_limit_usd),
+    batch_size: String(settings.batch_size),
+    worker_interval_minutes: String(settings.worker_interval_minutes),
+    retry_base_minutes: String(settings.retry_base_minutes),
+    max_attempts: String(settings.max_attempts),
+  };
+}
+
+function parseNewsAnalysisSettingsForm(
+  form: ReturnType<typeof formatNewsAnalysisSettingsForm>,
+): NewsAnalysisSettings | null {
+  const settings = {
+    freshness_days: Number(form.freshness_days),
+    daily_article_limit: Number(form.daily_article_limit),
+    daily_cost_limit_usd: Number(form.daily_cost_limit_usd),
+    batch_size: Number(form.batch_size),
+    worker_interval_minutes: Number(form.worker_interval_minutes),
+    retry_base_minutes: Number(form.retry_base_minutes),
+    max_attempts: Number(form.max_attempts),
+  };
+  const valid = Number.isInteger(settings.freshness_days)
+    && settings.freshness_days >= 1
+    && settings.freshness_days <= 30
+    && Number.isInteger(settings.daily_article_limit)
+    && settings.daily_article_limit >= 1
+    && settings.daily_article_limit <= 5000
+    && Number.isFinite(settings.daily_cost_limit_usd)
+    && settings.daily_cost_limit_usd >= 0.001
+    && settings.daily_cost_limit_usd <= 100
+    && Number.isInteger(settings.batch_size)
+    && settings.batch_size >= 1
+    && settings.batch_size <= 20
+    && Number.isInteger(settings.worker_interval_minutes)
+    && settings.worker_interval_minutes >= 1
+    && settings.worker_interval_minutes <= 1440
+    && Number.isInteger(settings.retry_base_minutes)
+    && settings.retry_base_minutes >= 1
+    && settings.retry_base_minutes <= 1440
+    && Number.isInteger(settings.max_attempts)
+    && settings.max_attempts >= 1
+    && settings.max_attempts <= 10;
+  return valid ? settings : null;
 }
 
 function parseNewsPerformanceSettingsForm(

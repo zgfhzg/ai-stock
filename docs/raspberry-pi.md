@@ -98,6 +98,7 @@ make health
 - 관심종목: `data/watchlist.json`
 - 자동매매 규칙: `data/auto-rules.json`
 - 리스크 설정: `data/risk-settings.json`
+- 뉴스 AI 처리 설정: `data/news-analysis-settings.json`
 - 감시 로그: `data/auto-rule-checks.jsonl`
 - 주문 로그: `data/orders.jsonl`
 - KIS 토큰 캐시: `data/kis-token.json`

@@ -4,6 +4,7 @@ mod crypto;
 mod error;
 mod kis;
 mod news;
+mod news_analysis_settings;
 mod news_performance;
 mod orders;
 mod overseas;

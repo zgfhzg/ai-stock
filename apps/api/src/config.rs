@@ -46,6 +46,13 @@ pub struct AppConfig {
     pub news_max_database_bytes: u64,
     pub news_analysis_enabled: bool,
     pub news_analysis_batch_size: usize,
+    pub news_analysis_settings_path: String,
+    pub news_analysis_freshness_days: u64,
+    pub news_analysis_daily_limit: u64,
+    pub news_analysis_daily_cost_limit_usd: f64,
+    pub news_analysis_worker_interval_minutes: u64,
+    pub news_analysis_retry_base_minutes: u64,
+    pub news_analysis_max_attempts: u32,
     pub max_overseas_order_amount_usd: f64,
     pub max_crypto_order_amount_usdt: f64,
     pub max_order_amount_krw: u64,
@@ -160,6 +167,37 @@ impl AppConfig {
                 .parse::<usize>()
                 .unwrap_or(10)
                 .clamp(1, 20),
+            news_analysis_settings_path: read_env(
+                "NEWS_ANALYSIS_SETTINGS_PATH",
+                "../../data/news-analysis-settings.json",
+            ),
+            news_analysis_freshness_days: read_env("NEWS_ANALYSIS_FRESHNESS_DAYS", "7")
+                .parse()
+                .unwrap_or(7),
+            news_analysis_daily_limit: read_env("NEWS_ANALYSIS_DAILY_LIMIT", "200")
+                .parse()
+                .unwrap_or(200),
+            news_analysis_daily_cost_limit_usd: read_env(
+                "NEWS_ANALYSIS_DAILY_COST_LIMIT_USD",
+                "0.02",
+            )
+            .parse()
+            .unwrap_or(0.02),
+            news_analysis_worker_interval_minutes: read_env(
+                "NEWS_ANALYSIS_WORKER_INTERVAL_MINUTES",
+                "5",
+            )
+            .parse()
+            .unwrap_or(5),
+            news_analysis_retry_base_minutes: read_env(
+                "NEWS_ANALYSIS_RETRY_BASE_MINUTES",
+                "15",
+            )
+            .parse()
+            .unwrap_or(15),
+            news_analysis_max_attempts: read_env("NEWS_ANALYSIS_MAX_ATTEMPTS", "3")
+                .parse()
+                .unwrap_or(3),
             max_overseas_order_amount_usd: read_env("MAX_OVERSEAS_ORDER_AMOUNT_USD", "100")
                 .parse()
                 .unwrap_or(100.0),
