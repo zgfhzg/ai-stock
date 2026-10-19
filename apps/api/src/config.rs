@@ -41,6 +41,8 @@ pub struct AppConfig {
     pub news_db_path: String,
     pub news_feed_urls: Vec<String>,
     pub news_collection_interval_hours: u64,
+    pub news_collection_hour_kst: u8,
+    pub news_collection_minute_kst: u8,
     pub news_retention_days: u64,
     pub news_daily_limit: u32,
     pub news_max_database_bytes: u64,
@@ -152,6 +154,14 @@ impl AppConfig {
             news_collection_interval_hours: read_env("NEWS_COLLECTION_INTERVAL_HOURS", "24")
                 .parse()
                 .unwrap_or(24),
+            news_collection_hour_kst: read_env("NEWS_COLLECTION_HOUR_KST", "8")
+                .parse::<u8>()
+                .unwrap_or(8)
+                .min(23),
+            news_collection_minute_kst: read_env("NEWS_COLLECTION_MINUTE_KST", "0")
+                .parse::<u8>()
+                .unwrap_or(0)
+                .min(59),
             news_retention_days: read_env("NEWS_RETENTION_DAYS", "90")
                 .parse()
                 .unwrap_or(90),

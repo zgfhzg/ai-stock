@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::{
     task::JoinHandle,
-    time::{sleep, Duration},
+    time::{sleep, timeout, Duration},
 };
 
 use crate::{
@@ -200,7 +200,10 @@ struct NewsHolding {
 pub struct NewsCollectorStatus {
     pub running: bool,
     pub collecting: bool,
+    pub preparing: bool,
     pub interval_hours: u64,
+    pub collection_hour_kst: u8,
+    pub collection_minute_kst: u8,
     pub retention_days: u64,
     pub daily_limit: u32,
     pub article_count: u64,
@@ -211,6 +214,8 @@ pub struct NewsCollectorStatus {
     pub next_collection_at_unix: Option<u64>,
     pub last_inserted_count: u32,
     pub last_error: Option<String>,
+    pub last_preparation_at_unix: Option<u64>,
+    pub last_preparation_error: Option<String>,
     pub analyzed_count: u64,
     pub pending_analysis_count: u64,
     pub failed_analysis_count: u64,
@@ -235,7 +240,10 @@ impl Default for NewsCollectorRuntime {
             status: NewsCollectorStatus {
                 running: false,
                 collecting: false,
+                preparing: false,
                 interval_hours: 24,
+                collection_hour_kst: 8,
+                collection_minute_kst: 0,
                 retention_days: 90,
                 daily_limit: 300,
                 article_count: 0,
@@ -246,6 +254,8 @@ impl Default for NewsCollectorRuntime {
                 next_collection_at_unix: None,
                 last_inserted_count: 0,
                 last_error: None,
+                last_preparation_at_unix: None,
+                last_preparation_error: None,
                 analyzed_count: 0,
                 pending_analysis_count: 0,
                 failed_analysis_count: 0,
@@ -377,16 +387,31 @@ pub async fn start_collector(state: &AppState) {
     runtime.status.analysis_enabled = state.config.news_analysis_enabled;
     let analysis_settings = news_analysis_settings::get(state)
         .unwrap_or_else(|_| NewsAnalysisSettings::from_config(&state.config));
+    runtime.status.collection_hour_kst = analysis_settings.collection_hour_kst;
+    runtime.status.collection_minute_kst = analysis_settings.collection_minute_kst;
+    runtime.status.next_collection_at_unix = Some(next_korea_schedule(
+        unix_now(),
+        analysis_settings.collection_hour_kst,
+        analysis_settings.collection_minute_kst,
+    ));
     runtime.status.next_analysis_at_unix =
         Some(unix_now() + analysis_settings.worker_interval_minutes.clamp(1, 1_440) * 60);
 
     let worker_state = state.clone();
     runtime.collector_handle = Some(tokio::spawn(async move {
         loop {
-            if let Err((_, Json(error))) = collect_once(&worker_state).await {
-                tracing::warn!("news collection failed: {}", error.message);
+            sleep(Duration::from_secs(30)).await;
+            let due = {
+                let runtime = worker_state.news_collector.lock().await;
+                runtime
+                    .status
+                    .next_collection_at_unix
+                    .is_some_and(|next| next <= unix_now())
+                    && !runtime.status.preparing
+            };
+            if due {
+                run_scheduled_preparation(&worker_state).await;
             }
-            sleep(Duration::from_secs(interval_hours * 3600)).await;
         }
     }));
 
@@ -400,6 +425,7 @@ pub async fn start_collector(state: &AppState) {
                     .status
                     .next_analysis_at_unix
                     .is_some_and(|next| next <= unix_now())
+                    && !runtime.status.preparing
             };
             if !due {
                 continue;
@@ -413,11 +439,25 @@ pub async fn start_collector(state: &AppState) {
 
 pub async fn reschedule_analysis(state: &AppState, settings: &NewsAnalysisSettings) {
     let mut runtime = state.news_collector.lock().await;
+    runtime.status.collection_hour_kst = settings.collection_hour_kst;
+    runtime.status.collection_minute_kst = settings.collection_minute_kst;
+    runtime.status.next_collection_at_unix = Some(next_korea_schedule(
+        unix_now(),
+        settings.collection_hour_kst,
+        settings.collection_minute_kst,
+    ));
     runtime.status.next_analysis_at_unix =
         Some(unix_now() + settings.worker_interval_minutes.clamp(1, 1_440) * 60);
 }
 
 pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
+    collect_once_internal(state, true).await
+}
+
+async fn collect_once_internal(
+    state: &AppState,
+    schedule_analysis: bool,
+) -> ApiResult<NewsCollectorStatus> {
     {
         let mut runtime = state.news_collector.lock().await;
         if runtime.status.collecting {
@@ -433,12 +473,18 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
     }
 
     let result = fetch_and_store(state).await;
-    let should_schedule_analysis = result.is_ok() && state.config.news_analysis_enabled;
+    let should_schedule_analysis =
+        schedule_analysis && result.is_ok() && state.config.news_analysis_enabled;
     let mut runtime = state.news_collector.lock().await;
     runtime.status.collecting = false;
     runtime.status.last_finished_at_unix = Some(unix_now());
-    runtime.status.next_collection_at_unix =
-        Some(unix_now() + state.config.news_collection_interval_hours.clamp(1, 168) * 3600);
+    if let Ok(settings) = news_analysis_settings::get(state) {
+        runtime.status.next_collection_at_unix = Some(next_korea_schedule(
+            unix_now(),
+            settings.collection_hour_kst,
+            settings.collection_minute_kst,
+        ));
+    }
 
     match result {
         Ok(inserted) => {
@@ -464,6 +510,64 @@ pub async fn collect_once(state: &AppState) -> ApiResult<NewsCollectorStatus> {
                 error,
             ))
         }
+    }
+}
+
+async fn run_scheduled_preparation(state: &AppState) {
+    {
+        let mut runtime = state.news_collector.lock().await;
+        if runtime.status.preparing {
+            return;
+        }
+        runtime.status.preparing = true;
+        runtime.status.last_preparation_error = None;
+    }
+
+    let result = run_scheduled_preparation_steps(state).await;
+    let settings = news_analysis_settings::get(state)
+        .unwrap_or_else(|_| NewsAnalysisSettings::from_config(&state.config));
+    let mut runtime = state.news_collector.lock().await;
+    runtime.status.preparing = false;
+    runtime.status.last_preparation_at_unix = Some(unix_now());
+    runtime.status.next_collection_at_unix = Some(next_korea_schedule(
+        unix_now(),
+        settings.collection_hour_kst,
+        settings.collection_minute_kst,
+    ));
+    if let Err((_, Json(error))) = result {
+        tracing::warn!("scheduled news preparation failed: {}", error.message);
+        runtime.status.last_preparation_error = Some(error.message);
+    }
+}
+
+async fn run_scheduled_preparation_steps(state: &AppState) -> ApiResult<()> {
+    collect_once_internal(state, false).await?;
+    if !state.config.news_analysis_enabled {
+        return Ok(());
+    }
+    timeout(Duration::from_secs(30 * 60), wait_for_analysis_idle(state))
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "news_analysis_wait_timeout",
+                "Timed out waiting for the active news analysis to finish.",
+            )
+        })?;
+    drain_analysis_backlog(state).await?;
+    match generate_daily_outlooks(state).await {
+        Ok(_) => Ok(()),
+        Err((_, Json(error))) if error.code == "no_daily_news_events" => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn wait_for_analysis_idle(state: &AppState) {
+    loop {
+        if !state.news_collector.lock().await.status.analyzing {
+            return;
+        }
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -997,6 +1101,41 @@ fn signal_expires_at(generated_at: i64, horizon: &str) -> i64 {
 
 fn korea_day_key(timestamp: i64) -> i64 {
     (timestamp + 9 * 3600).div_euclid(24 * 3600)
+}
+
+fn korea_schedule_for_day(day_key: i64, hour: u8, minute: u8) -> i64 {
+    day_key * 86_400 - 9 * 3_600 + i64::from(hour) * 3_600 + i64::from(minute) * 60
+}
+
+fn is_korea_weekday(day_key: i64) -> bool {
+    (day_key + 3).rem_euclid(7) < 5
+}
+
+fn next_korea_schedule(now: u64, hour: u8, minute: u8) -> u64 {
+    let now = now as i64;
+    let mut day_key = korea_day_key(now);
+    loop {
+        let candidate = korea_schedule_for_day(day_key, hour.min(23), minute.min(59));
+        if is_korea_weekday(day_key) && candidate > now {
+            return candidate as u64;
+        }
+        day_key += 1;
+    }
+}
+
+fn current_analysis_cycle_start(now: i64, settings: &NewsAnalysisSettings) -> i64 {
+    let mut day_key = korea_day_key(now);
+    loop {
+        let candidate = korea_schedule_for_day(
+            day_key,
+            settings.collection_hour_kst,
+            settings.collection_minute_kst,
+        );
+        if is_korea_weekday(day_key) && candidate <= now {
+            return candidate;
+        }
+        day_key -= 1;
+    }
 }
 
 pub fn ai_stock_candidates(state: &AppState) -> ApiResult<Vec<AiStockCandidate>> {
@@ -1754,13 +1893,13 @@ fn available_analysis_batch_size(
 ) -> ApiResult<usize> {
     let connection = open_database(state).map_err(database_error)?;
     let now = unix_now() as i64;
-    let today_start = korea_day_key(now) * 86_400 - 9 * 3_600;
+    let cycle_start = current_analysis_cycle_start(now, settings);
     let (requested_today, spent_today): (u64, f64) = connection
         .query_row(
             "SELECT COALESCE(SUM(requested_count), 0),
                     COALESCE(SUM(estimated_cost_usd), 0)
              FROM news_analysis_runs WHERE started_at_unix >= ?1",
-            [today_start],
+            [cycle_start],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(database_error)?;
@@ -2427,12 +2566,79 @@ mod tests {
     }
 
     #[test]
+    fn schedules_collection_at_a_fixed_korea_time() {
+        let day_key = 20_000;
+        let scheduled = korea_schedule_for_day(day_key, 8, 0);
+        assert_eq!(
+            next_korea_schedule((scheduled - 1) as u64, 8, 0),
+            scheduled as u64
+        );
+        assert_eq!(
+            next_korea_schedule(scheduled as u64, 8, 0),
+            (scheduled + 3 * 86_400) as u64
+        );
+    }
+
+    #[test]
+    fn skips_weekends_for_collection_and_budget_cycles() {
+        let friday = 20_000;
+        let saturday_noon = korea_schedule_for_day(friday + 1, 12, 0);
+        let monday_morning = korea_schedule_for_day(friday + 3, 8, 0);
+        let settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
+            freshness_days: 7,
+            daily_article_limit: 200,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+
+        assert_eq!(
+            next_korea_schedule(saturday_noon as u64, 8, 0),
+            monday_morning as u64
+        );
+        assert_eq!(
+            current_analysis_cycle_start(saturday_noon, &settings),
+            korea_schedule_for_day(friday, 8, 0)
+        );
+    }
+
+    #[test]
+    fn resets_analysis_budget_at_the_collection_time() {
+        let settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
+            freshness_days: 7,
+            daily_article_limit: 200,
+            daily_cost_limit_usd: 0.02,
+            batch_size: 10,
+            worker_interval_minutes: 5,
+            retry_base_minutes: 15,
+            max_attempts: 3,
+        };
+        let scheduled = korea_schedule_for_day(20_000, 8, 0);
+        assert_eq!(
+            current_analysis_cycle_start(scheduled - 1, &settings),
+            scheduled - 86_400
+        );
+        assert_eq!(
+            current_analysis_cycle_start(scheduled, &settings),
+            scheduled
+        );
+    }
+
+    #[test]
     fn expires_news_outside_analysis_window() {
         let state = queue_test_state();
         let now = unix_now() as i64;
         insert_queue_article(&state, 1, "pending", now - 8 * 86_400, 0, None);
         insert_queue_article(&state, 2, "pending", now - 86_400, 0, None);
         let settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
             freshness_days: 7,
             daily_article_limit: 200,
             daily_cost_limit_usd: 0.02,
@@ -2466,6 +2672,8 @@ mod tests {
         }
         insert_queue_article(&state, 16, "failed", now - 60, 1, Some(now + 3_600));
         let settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
             freshness_days: 7,
             daily_article_limit: 200,
             daily_cost_limit_usd: 0.02,
@@ -2501,6 +2709,8 @@ mod tests {
         let now = unix_now() as i64;
         insert_queue_article(&state, 1, "pending", now, 0, None);
         let settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
             freshness_days: 7,
             daily_article_limit: 200,
             daily_cost_limit_usd: 0.02,
@@ -2570,6 +2780,8 @@ mod tests {
         let now = unix_now() as i64;
         record_analysis_run(&connection, now, now, "success", &run, None).expect("analysis run");
         let mut settings = NewsAnalysisSettings {
+            collection_hour_kst: 8,
+            collection_minute_kst: 0,
             freshness_days: 7,
             daily_article_limit: 12,
             daily_cost_limit_usd: 0.02,

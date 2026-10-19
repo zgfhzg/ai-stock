@@ -172,7 +172,10 @@ type NewsArticle = {
 type NewsCollectorStatus = {
   running: boolean;
   collecting: boolean;
+  preparing: boolean;
   interval_hours: number;
+  collection_hour_kst: number;
+  collection_minute_kst: number;
   retention_days: number;
   daily_limit: number;
   article_count: number;
@@ -183,6 +186,8 @@ type NewsCollectorStatus = {
   next_collection_at_unix?: number | null;
   last_inserted_count: number;
   last_error?: string | null;
+  last_preparation_at_unix?: number | null;
+  last_preparation_error?: string | null;
   analyzed_count: number;
   pending_analysis_count: number;
   failed_analysis_count: number;
@@ -245,6 +250,8 @@ type NewsAnalysisUsageSummary = {
 };
 
 type NewsAnalysisSettings = {
+  collection_hour_kst: number;
+  collection_minute_kst: number;
   freshness_days: number;
   daily_article_limit: number;
   daily_cost_limit_usd: number;
@@ -255,6 +262,8 @@ type NewsAnalysisSettings = {
 };
 
 const recommendedNewsAnalysisSettings: NewsAnalysisSettings = {
+  collection_hour_kst: 8,
+  collection_minute_kst: 0,
   freshness_days: 7,
   daily_article_limit: 200,
   daily_cost_limit_usd: 0.02,
@@ -1468,9 +1477,17 @@ function App() {
             <section className="analysis-settings" aria-label="뉴스 AI 분석 처리 설정">
               <div className="candidate-section-title">
                 <strong>뉴스 분석 처리</strong>
-                <span>{newsStatus?.analyzing ? "자동 처리 중" : `오늘 ${newsAnalysisUsage?.today.requested_articles ?? 0}/${newsAnalysisSettingsForm.daily_article_limit}건`}</span>
+                <span>{newsStatus?.preparing ? "장전 준비 중" : newsStatus?.analyzing ? "자동 처리 중" : `오늘 ${newsAnalysisUsage?.today.requested_articles ?? 0}/${newsAnalysisSettingsForm.daily_article_limit}건`}</span>
               </div>
               <form className="analysis-settings-form" onSubmit={handleSaveNewsAnalysisSettings}>
+                <label>
+                  <span>장전 실행 시각 (KST)</span>
+                  <input
+                    type="time"
+                    value={newsAnalysisSettingsForm.collection_time_kst}
+                    onChange={(event) => handleNewsAnalysisSettingsChange("collection_time_kst", event.target.value)}
+                  />
+                </label>
                 <label>
                   <span>유효기간 (일)</span>
                   <input
@@ -2985,6 +3002,7 @@ function formatNewsStorage(status: NewsCollectorStatus | null) {
 
 function formatNewsCollectorTitle(status: NewsCollectorStatus | null) {
   if (!status) return "뉴스 수집기 확인 중";
+  if (status.preparing) return "장전 뉴스와 오늘의 전망을 준비하고 있습니다.";
   if (status.collecting) return "새 뉴스를 수집하고 있습니다.";
   if (status.last_error) return "최근 수집에서 오류가 발생했습니다.";
   if (status.last_finished_at_unix) {
@@ -2996,10 +3014,12 @@ function formatNewsCollectorTitle(status: NewsCollectorStatus | null) {
 function formatNewsCollectorDetail(status: NewsCollectorStatus | null) {
   if (!status) return "원문과 이미지는 저장하지 않습니다.";
   if (status.last_error) return status.last_error;
+  if (status.last_preparation_error) return `최근 장전 준비 오류: ${status.last_preparation_error}`;
   if (!status.analysis_enabled) return "뉴스 수집 정상 · AI 분석은 OPENAI_API_KEY 설정 후 활성화됩니다.";
   if (status.last_analysis_error) return `수집 정상 · AI 분석 오류: ${status.last_analysis_error}`;
   const analysisState = status.analyzing ? " · 자동 분석 중" : "";
-  return `${status.interval_hours}시간 수집 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count} · 만료 ${status.expired_analysis_count}${analysisState}`;
+  const schedule = `${String(status.collection_hour_kst).padStart(2, "0")}:${String(status.collection_minute_kst).padStart(2, "0")} KST`;
+  return `평일 ${schedule} 장전 준비 · 분석 ${status.analyzed_count} · 대기 ${status.pending_analysis_count} · 실패 ${status.failed_analysis_count} · 만료 ${status.expired_analysis_count}${analysisState}`;
 }
 
 function formatNewsAnalysisRun(run: NewsAnalysisRun) {
@@ -3140,6 +3160,7 @@ function formatNewsPerformanceSettingsForm(settings: NewsPerformanceSettings) {
 
 function formatNewsAnalysisSettingsForm(settings: NewsAnalysisSettings) {
   return {
+    collection_time_kst: `${String(settings.collection_hour_kst).padStart(2, "0")}:${String(settings.collection_minute_kst).padStart(2, "0")}`,
     freshness_days: String(settings.freshness_days),
     daily_article_limit: String(settings.daily_article_limit),
     daily_cost_limit_usd: String(settings.daily_cost_limit_usd),
@@ -3153,7 +3174,10 @@ function formatNewsAnalysisSettingsForm(settings: NewsAnalysisSettings) {
 function parseNewsAnalysisSettingsForm(
   form: ReturnType<typeof formatNewsAnalysisSettingsForm>,
 ): NewsAnalysisSettings | null {
+  const [collectionHour, collectionMinute] = form.collection_time_kst.split(":").map(Number);
   const settings = {
+    collection_hour_kst: collectionHour,
+    collection_minute_kst: collectionMinute,
     freshness_days: Number(form.freshness_days),
     daily_article_limit: Number(form.daily_article_limit),
     daily_cost_limit_usd: Number(form.daily_cost_limit_usd),
@@ -3162,7 +3186,13 @@ function parseNewsAnalysisSettingsForm(
     retry_base_minutes: Number(form.retry_base_minutes),
     max_attempts: Number(form.max_attempts),
   };
-  const valid = Number.isInteger(settings.freshness_days)
+  const valid = Number.isInteger(settings.collection_hour_kst)
+    && settings.collection_hour_kst >= 0
+    && settings.collection_hour_kst <= 23
+    && Number.isInteger(settings.collection_minute_kst)
+    && settings.collection_minute_kst >= 0
+    && settings.collection_minute_kst <= 59
+    && Number.isInteger(settings.freshness_days)
     && settings.freshness_days >= 1
     && settings.freshness_days <= 30
     && Number.isInteger(settings.daily_article_limit)

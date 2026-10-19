@@ -10,6 +10,10 @@ use crate::{
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct NewsAnalysisSettings {
+    #[serde(default = "default_collection_hour_kst")]
+    pub collection_hour_kst: u8,
+    #[serde(default = "default_collection_minute_kst")]
+    pub collection_minute_kst: u8,
     pub freshness_days: u64,
     pub daily_article_limit: u64,
     pub daily_cost_limit_usd: f64,
@@ -22,6 +26,8 @@ pub struct NewsAnalysisSettings {
 impl NewsAnalysisSettings {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
+            collection_hour_kst: config.news_collection_hour_kst,
+            collection_minute_kst: config.news_collection_minute_kst,
             freshness_days: config.news_analysis_freshness_days,
             daily_article_limit: config.news_analysis_daily_limit,
             daily_cost_limit_usd: config.news_analysis_daily_cost_limit_usd,
@@ -68,7 +74,9 @@ fn write_settings(path: &str, settings: &NewsAnalysisSettings) -> ApiResult<()> 
 }
 
 fn validate(settings: &NewsAnalysisSettings) -> ApiResult<()> {
-    let valid = (1..=30).contains(&settings.freshness_days)
+    let valid = settings.collection_hour_kst <= 23
+        && settings.collection_minute_kst <= 59
+        && (1..=30).contains(&settings.freshness_days)
         && (1..=5_000).contains(&settings.daily_article_limit)
         && settings.daily_cost_limit_usd.is_finite()
         && (0.001..=100.0).contains(&settings.daily_cost_limit_usd)
@@ -89,6 +97,14 @@ fn validate(settings: &NewsAnalysisSettings) -> ApiResult<()> {
     }
 }
 
+fn default_collection_hour_kst() -> u8 {
+    8
+}
+
+fn default_collection_minute_kst() -> u8 {
+    0
+}
+
 fn file_error(code: &str, error: impl std::fmt::Display) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -107,6 +123,8 @@ mod tests {
     fn recommended_settings_are_valid() {
         let mut config = AppConfig::load();
         config.news_analysis_freshness_days = 7;
+        config.news_collection_hour_kst = 8;
+        config.news_collection_minute_kst = 0;
         config.news_analysis_daily_limit = 200;
         config.news_analysis_daily_cost_limit_usd = 0.02;
         config.news_analysis_batch_size = 10;
@@ -114,5 +132,25 @@ mod tests {
         config.news_analysis_retry_base_minutes = 15;
         config.news_analysis_max_attempts = 3;
         assert!(validate(&NewsAnalysisSettings::from_config(&config)).is_ok());
+    }
+
+    #[test]
+    fn old_settings_files_use_the_recommended_collection_time() {
+        let settings: NewsAnalysisSettings = serde_json::from_str(
+            r#"{
+                "freshness_days": 7,
+                "daily_article_limit": 200,
+                "daily_cost_limit_usd": 0.02,
+                "batch_size": 10,
+                "worker_interval_minutes": 5,
+                "retry_base_minutes": 15,
+                "max_attempts": 3
+            }"#,
+        )
+        .expect("legacy settings");
+
+        assert_eq!(settings.collection_hour_kst, 8);
+        assert_eq!(settings.collection_minute_kst, 0);
+        assert!(validate(&settings).is_ok());
     }
 }
