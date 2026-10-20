@@ -369,6 +369,17 @@ pub fn initialize(state: &AppState) -> anyhow::Result<()> {
         [],
     )?;
     ensure_outlook_columns(&connection)?;
+    connection.execute(
+        "UPDATE stock_daily_outlooks
+         SET decision_status = 'market_data_pending', block_reason = NULL
+         WHERE decision_status = 'blocked' AND block_reason IN (?1, ?2, ?3, ?4)",
+        params![
+            "누적 거래량이 1만 주 미만이라 후보에서 제외했습니다.",
+            "추정 거래대금이 1억 원 미만이라 후보에서 제외했습니다.",
+            "전일 대비 5% 이상 상승해 뉴스 매수 후보를 차단했습니다.",
+            "장중 변동성이 10% 이상이라 뉴스 매수 후보를 차단했습니다."
+        ],
+    )?;
     Ok(())
 }
 
@@ -1022,14 +1033,37 @@ fn value_string(value: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+pub fn instrument_block_reason(output: Option<&Value>) -> Option<String> {
+    let output = output?;
+    let snapshot = market_snapshot(output);
+    if snapshot.temporary_stop == Some(true) {
+        return Some("거래가 임시 정지된 종목입니다.".to_string());
+    }
+    if snapshot
+        .instrument_status_code
+        .as_deref()
+        .is_some_and(|code| !matches!(code, "00" | "55"))
+    {
+        return Some("정상 종목 상태가 아닙니다.".to_string());
+    }
+    if snapshot
+        .market_warning_code
+        .as_deref()
+        .is_some_and(|code| code != "00")
+    {
+        return Some("시장경고 종목입니다.".to_string());
+    }
+    None
+}
+
 fn evaluate_outlook_market_state(
-    action: &str,
+    _action: &str,
     expires_at: i64,
     now: i64,
-    change_rate: Option<f64>,
-    volatility: Option<f64>,
-    current_price: Option<u64>,
-    accumulated_volume: Option<u64>,
+    _change_rate: Option<f64>,
+    _volatility: Option<f64>,
+    _current_price: Option<u64>,
+    _accumulated_volume: Option<u64>,
     instrument_status_code: Option<&str>,
     market_warning_code: Option<&str>,
     temporary_stop: Option<bool>,
@@ -1056,33 +1090,6 @@ fn evaluate_outlook_market_state(
         return (
             "blocked".to_string(),
             Some("시장경고 종목이라 후보에서 제외했습니다.".to_string()),
-        );
-    }
-    if accumulated_volume.is_some_and(|volume| volume < 10_000) {
-        return (
-            "blocked".to_string(),
-            Some("누적 거래량이 1만 주 미만이라 후보에서 제외했습니다.".to_string()),
-        );
-    }
-    if current_price
-        .zip(accumulated_volume)
-        .is_some_and(|(price, volume)| price.saturating_mul(volume) < 100_000_000)
-    {
-        return (
-            "blocked".to_string(),
-            Some("추정 거래대금이 1억 원 미만이라 후보에서 제외했습니다.".to_string()),
-        );
-    }
-    if action == "buy_candidate" && change_rate.is_some_and(|rate| rate >= 5.0) {
-        return (
-            "blocked".to_string(),
-            Some("전일 대비 5% 이상 상승해 뉴스 매수 후보를 차단했습니다.".to_string()),
-        );
-    }
-    if action == "buy_candidate" && volatility.is_some_and(|rate| rate >= 10.0) {
-        return (
-            "blocked".to_string(),
-            Some("장중 변동성이 10% 이상이라 뉴스 매수 후보를 차단했습니다.".to_string()),
         );
     }
     ("eligible".to_string(), None)
@@ -2938,7 +2945,7 @@ mod tests {
     }
 
     #[test]
-    fn blocks_overheated_buy_candidate() {
+    fn leaves_price_overheating_to_ai_judgment() {
         let (status, reason) = evaluate_outlook_market_state(
             "buy_candidate",
             2_000_000,
@@ -2951,8 +2958,8 @@ mod tests {
             Some("00"),
             Some(false),
         );
-        assert_eq!(status, "blocked");
-        assert!(reason.is_some());
+        assert_eq!(status, "eligible");
+        assert!(reason.is_none());
     }
 
     #[test]
@@ -2987,7 +2994,7 @@ mod tests {
     }
 
     #[test]
-    fn blocks_low_liquidity_candidate() {
+    fn leaves_low_volume_to_ai_judgment() {
         let (status, reason) = evaluate_outlook_market_state(
             "buy_candidate",
             2_000_000,
@@ -3000,8 +3007,8 @@ mod tests {
             Some("00"),
             Some(false),
         );
-        assert_eq!(status, "blocked");
-        assert!(reason.unwrap_or_default().contains("거래량"));
+        assert_eq!(status, "eligible");
+        assert!(reason.is_none());
     }
 
     #[test]

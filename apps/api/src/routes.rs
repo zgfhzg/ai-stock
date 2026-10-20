@@ -120,6 +120,7 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/news/analyze", post(analyze_news))
         .route("/api/orders", get(order_logs).post(place_order))
         .route("/api/auto-trading/run", post(run_auto_trading))
+        .route("/api/auto-trading/plans", get(ai_price_plans))
         .route("/api/auto-trading/runs", get(auto_trading_logs))
         .route("/api/auto-trading/monitor", get(auto_monitor_status))
         .route("/api/auto-trading/monitor/start", post(start_auto_monitor))
@@ -144,6 +145,18 @@ pub fn app_router() -> Router<AppState> {
         )
         .route("/api/auto-trading/rules/:id", delete(remove_trading_rule))
         .route("/api/ai/proposal", post(proposal))
+}
+
+async fn ai_price_plans(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<crate::ai_plans::StoredPlan>>> {
+    crate::ai_plans::list(&state).map(Json).map_err(|error| {
+        crate::error::api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "ai_plan_read_failed",
+            error.to_string(),
+        )
+    })
 }
 
 #[derive(Serialize)]

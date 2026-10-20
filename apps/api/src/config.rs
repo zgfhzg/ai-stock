@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub auto_decision_log_path: String,
     pub auto_monitor_settings_path: String,
     pub auto_min_confidence: f64,
+    pub ai_plan_daily_limit: u64,
+    pub ai_order_review_seconds: u64,
     pub risk_settings_path: String,
     pub news_db_path: String,
     pub news_feed_urls: Vec<String>,
@@ -140,6 +142,8 @@ impl AppConfig {
             auto_min_confidence: read_env("AUTO_MIN_CONFIDENCE", "0.7")
                 .parse()
                 .unwrap_or(0.7),
+            ai_plan_daily_limit: read_env("AI_PLAN_DAILY_LIMIT", "40").parse::<u64>().unwrap_or(40).clamp(1, 500),
+            ai_order_review_seconds: read_env("AI_ORDER_REVIEW_SECONDS", "300").parse::<u64>().unwrap_or(300).clamp(60, 3600),
             risk_settings_path: read_env("RISK_SETTINGS_PATH", "../../data/risk-settings.json"),
             news_db_path: read_env("NEWS_DB_PATH", "../../data/sqlite/news.db"),
             news_feed_urls: read_env(

@@ -5,9 +5,15 @@ from pydantic import BaseModel
 
 from app.news_analysis import NewsAnalysisRequest, NewsAnalysisResponse, analyze_news
 from app.daily_outlook import DailyOutlookRequest, DailyOutlookResponse, generate_daily_outlooks
+from app.trade_plan import TradePlanRequest, TradePlanResponse, generate_trade_plan
 
 
 app = FastAPI(title="AI Stock Strategy")
+
+
+@app.post("/strategy/trade-plan")
+def create_trade_plan(request: TradePlanRequest) -> TradePlanResponse:
+    return generate_trade_plan(request)
 
 
 class HealthResponse(BaseModel):

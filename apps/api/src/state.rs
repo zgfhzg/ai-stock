@@ -15,6 +15,8 @@ pub struct AppState {
     pub rule_monitor: Arc<Mutex<RuleMonitorRuntime>>,
     pub auto_monitor: Arc<Mutex<AutoMonitorRuntime>>,
     pub news_collector: Arc<Mutex<NewsCollectorRuntime>>,
+    pub auto_run_lock: Arc<Mutex<()>>,
+    pub kis_request_gate: Arc<Mutex<tokio::time::Instant>>,
 }
 
 #[derive(Clone)]
@@ -40,6 +42,8 @@ impl AppState {
                 auto_universe_mode,
             ))),
             news_collector: Arc::new(Mutex::new(NewsCollectorRuntime::default())),
+            auto_run_lock: Arc::new(Mutex::new(())),
+            kis_request_gate: Arc::new(Mutex::new(tokio::time::Instant::now())),
         }
     }
 }

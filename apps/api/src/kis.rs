@@ -92,6 +92,7 @@ pub async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
     let response = state
         .http
         .post(url)
+        .timeout(Duration::from_secs(15))
         .header("content-type", "application/json; charset=UTF-8")
         .json(&body)
         .send()
@@ -292,6 +293,38 @@ pub fn token_status(token: AccessToken) -> TokenStatus {
     }
 }
 
+pub async fn get_auction_quote(state: &AppState, symbol: &str) -> ApiResult<KisApiResponse> {
+    ensure_kis_configured(&state.config)?;
+    let params = [("FID_COND_MRKT_DIV_CODE", "J"), ("FID_INPUT_ISCD", symbol)];
+    let value = kis_get(
+        state,
+        "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        "FHKST01010200",
+        &params,
+    )
+    .await?;
+    Ok(to_kis_response(value))
+}
+
+pub fn auction_output(quote: &KisApiResponse) -> Option<&Value> {
+    let output = quote.output2.as_ref()?;
+    if let Some(rows) = output.as_array() {
+        rows.first()
+    } else {
+        Some(output)
+    }
+}
+
+pub fn auction_reference_price(quote: &KisApiResponse) -> Option<u64> {
+    auction_output(quote)?
+        .get("antc_cnpr")?
+        .as_str()?
+        .replace(',', "")
+        .parse::<u64>()
+        .ok()
+        .filter(|price| *price > 0)
+}
+
 pub fn config_status(config: &AppConfig) -> KisConfigStatus {
     KisConfigStatus {
         configured: !config.kis_app_key.is_empty() && !config.kis_app_secret.is_empty(),
@@ -336,22 +369,49 @@ pub(crate) async fn kis_get(
     tr_id: &str,
     params: &[(&str, &str)],
 ) -> ApiResult<Value> {
+    kis_get_page(state, path, tr_id, params, false).await
+}
+
+pub(crate) async fn kis_get_page(
+    state: &AppState,
+    path: &str,
+    tr_id: &str,
+    params: &[(&str, &str)],
+    continuation: bool,
+) -> ApiResult<Value> {
     let token = get_access_token(state).await?;
+    throttle(state).await;
     let url = format!("{}{}", state.config.kis_base_url, path);
     let response = state
         .http
         .get(url)
+        .timeout(Duration::from_secs(15))
         .header("content-type", "application/json; charset=UTF-8")
         .header("authorization", format!("Bearer {}", token.value))
         .header("appKey", state.config.kis_app_key.as_str())
         .header("appSecret", state.config.kis_app_secret.as_str())
         .header("tr_id", tr_id)
+        .header("tr_cont", if continuation { "N" } else { "" })
         .query(params)
         .send()
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_request_failed", error))?;
 
-    parse_kis_response(response).await
+    let has_more = response
+        .headers()
+        .get("tr_cont")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| matches!(value, "M" | "F"));
+    let mut value = parse_kis_response(response).await?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "kis_response_parse_failed",
+            "Expected an object response",
+        )
+    })?;
+    object.insert("_has_more".into(), Value::Bool(has_more));
+    Ok(value)
 }
 
 pub(crate) async fn kis_post(
@@ -361,10 +421,12 @@ pub(crate) async fn kis_post(
     body: Value,
 ) -> ApiResult<Value> {
     let token = get_access_token(state).await?;
+    throttle(state).await;
     let url = format!("{}{}", state.config.kis_base_url, path);
     let response = state
         .http
         .post(url)
+        .timeout(Duration::from_secs(15))
         .header("content-type", "application/json; charset=UTF-8")
         .header("authorization", format!("Bearer {}", token.value))
         .header("appKey", state.config.kis_app_key.as_str())
@@ -376,6 +438,12 @@ pub(crate) async fn kis_post(
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_request_failed", error))?;
 
     parse_kis_response(response).await
+}
+
+async fn throttle(state: &AppState) {
+    let mut next_request = state.kis_request_gate.lock().await;
+    tokio::time::sleep_until(*next_request).await;
+    *next_request = tokio::time::Instant::now() + Duration::from_millis(1200);
 }
 
 async fn parse_kis_response(response: Response) -> ApiResult<Value> {

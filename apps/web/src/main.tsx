@@ -113,6 +113,25 @@ type AutoDecision = {
   quantity: number;
   order_amount_krw: number;
   skip_reason?: string | null;
+  price_plan?: {
+    plan: {
+      action: string;
+      entry_price: number;
+      take_profit_price: number;
+      stop_loss_price: number;
+      quantity: number;
+      session?: "regular" | "opening_auction";
+    };
+    model: string;
+    expires_at_unix: number;
+    order_status: string;
+    broker_order?: {
+      order_no: string;
+      filled_quantity: number;
+      remaining_quantity: number;
+      reason: string;
+    } | null;
+  } | null;
 };
 
 type AutoRunResponse = {
@@ -2289,6 +2308,19 @@ function App() {
                     <div>
                       <strong>{formatAction(decision.action)} · {Math.round(decision.confidence * 100)}% · {decision.quantity}주</strong>
                       <span>{decision.reason}{decision.order_amount_krw > 0 ? ` · ${formatKrw(decision.order_amount_krw)}` : ""}</span>
+                      {decision.price_plan ? (
+                        <span>
+                          {decision.price_plan.plan.action === "sell" ? "목표 매도가" : "진입 기준가"} {formatKrw(decision.price_plan.plan.entry_price)} · 익절 {formatKrw(decision.price_plan.plan.take_profit_price)} · 손절 {formatKrw(decision.price_plan.plan.stop_loss_price)} · 계획 {decision.price_plan.plan.quantity}주
+                          {` · ${formatRunTime(decision.price_plan.expires_at_unix)}까지 · ${decision.price_plan.model}`}
+                          {decision.price_plan.plan.session === "opening_auction" ? " · 시초가 동시호가" : " · 정규장"}
+                        </span>
+                      ) : null}
+                      {decision.price_plan?.broker_order ? (
+                        <span>
+                          주문 {decision.price_plan.broker_order.order_no || "접수 확인 중"} · 체결 {decision.price_plan.broker_order.filled_quantity}주 · 잔량 {decision.price_plan.broker_order.remaining_quantity}주 · {decision.price_plan.broker_order.reason}
+                        </span>
+                      ) : null}
+                      {decision.skip_reason ? <span>{formatAiPlanWaitingReason(decision.skip_reason)}</span> : null}
                     </div>
                   </article>
                 ))}
@@ -3102,6 +3134,24 @@ function formatMode(mode: string, executed: boolean) {
     return "자동주문 대기";
   }
   return "추천만";
+}
+
+function formatAiPlanWaitingReason(reason: string) {
+  const labels: Record<string, string> = {
+    waiting_ai_price: "AI 목표 가격 대기",
+    waiting_regular_session: "정규장 주문 시간 대기",
+    auction_quote_unavailable: "장전 예상체결가 확인 대기",
+    waiting_plan_session: "AI 계획 생성 시간 대기",
+    order_reconciliation_pending: "주문 체결 확인 대기",
+    ai_plan_unavailable: "AI 계획 생성 보류",
+    order_rejected: "주문 거절 후 재평가 대기",
+    instrument_restricted: "거래 제한 종목",
+    budget_or_holding_limit: "예산 또는 보유 수량 한도",
+    risk_or_confidence_check_failed: "위험관리 또는 신뢰도 기준 미달",
+    recommendation_only_mode: "추천 모드",
+    quote_unavailable: "시세 확인 대기",
+  };
+  return labels[reason] ?? reason;
 }
 
 function formatAverageSentiment(score?: number | null) {

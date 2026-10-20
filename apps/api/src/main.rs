@@ -1,4 +1,6 @@
+mod ai_plans;
 mod auto_trading;
+mod broker_orders;
 mod config;
 mod crypto;
 mod error;
@@ -42,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let port = config.api_port;
     let state = AppState::new(config);
     news::initialize(&state)?;
+    ai_plans::initialize(&state)?;
     news_performance::initialize(&state)?;
     if let Err((_, Json(error))) = rule_monitor::restore_monitor(&state).await {
         tracing::warn!("rule monitor restore failed: {}", error.message);
