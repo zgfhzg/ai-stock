@@ -120,6 +120,8 @@ AI 자율 자동매매의 기본 후보군은 `AUTO_UNIVERSE_MODE=market`이며,
 
 주문 전 `submitting` 상태와 주문 메타데이터를 저장해 재시작이나 응답 유실 시 중복 제출을 막습니다. 접수된 주문번호·주문일·종목·매매 방향으로 일별 주문체결 API를 조회하며 연속조회도 처리합니다. 체결 완료는 증권사 체결량과 잔고 반영을 함께 확인합니다. 응답 유실 주문은 시각·수량·가격까지 일치하는 주문이 정확히 하나일 때만 복구합니다. 모호한 주문은 자동 재제출하지 않습니다.
 
+자동매매 감시 중 KIS 통신·토큰 요청·응답 읽기가 실패하면 해당 회차에는 주문하지 않고 기본 감시 간격부터 최대 15분까지 지수 백오프로 재시도합니다. 통신 실패는 감시 활성 설정을 끄지 않으며 정상 조회가 되면 오류 횟수를 초기화합니다. 인증·설정 오류 등 다른 오류는 기존처럼 3회 연속 발생하면 감시를 중단합니다. 주문 POST 자체를 자동 재시도하는 동작은 추가하지 않습니다.
+
 미체결 잔량은 `AI_ORDER_REVIEW_SECONDS`(기본 300초)마다 AI가 유지·취소·가격 변경을 재평가합니다. 가격 변경은 원주문 잔량 취소 후 재주문 방식입니다. 취소를 보내기 전에 의도를 저장하고, 증권사 조회에서 취소가 확정되기 전에는 새 주문을 내지 않습니다. 부분 체결 후에는 남은 수량만 취소하고 체결된 포지션의 보호 가격을 유지합니다. 계획 만료, 이전 거래일 주문 또는 15:20 이후에는 잔량을 자동 취소합니다. 관리 주문의 체결분과 미체결 잔량을 기준으로 일일 매수 한도를 계산해 취소된 잔량이 재주문 예산에 중복 집계되지 않게 합니다. 상태 변화·취소·재평가는 `ai_order_events`에 기록합니다. 모의투자 미지원인 정정취소가능주문조회 대신 지원되는 일별 주문체결조회를 사용합니다. [KIS 지원 목록](https://github.com/koreainvestment/open-trading-api/blob/main/legacy/README.md), [체결 조회](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_ccld/inquire_daily_ccld.py), [취소 API](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/order_rvsecncl/order_rvsecncl.py).
 
 조건 기반 자동매매 규칙은 화면에서 추가하고, `규칙 점검 1회` 또는 `감시 시작`으로 현재가와 비교합니다. 감시는 백엔드 API 서버에서 실행되므로 브라우저를 닫아도 API 서버가 살아 있으면 선택한 주기마다 규칙을 반복 점검합니다. 감시 설정은 파일로 저장되어 API 서버가 재시작돼도 이전에 켜져 있던 감시를 자동 복구합니다. `모의 주문` 토글은 기본 OFF이며, 켜더라도 `AUTO_TRADE_MODE=paper_auto`일 때만 조건 충족 시 모의 주문을 시도합니다. 자동주문 실행 시에는 AI 판단 방향이 규칙 주문 방향과 같고 신뢰도가 `AUTO_MIN_CONFIDENCE` 이상이어야 합니다.

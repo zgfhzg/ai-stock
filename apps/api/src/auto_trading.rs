@@ -412,9 +412,11 @@ async fn monitor_loop(state: AppState, interval_seconds: u64) {
                     true
                 }
                 Err((_, Json(error))) => {
+                    let retryable = retryable_monitor_error(&error.code);
                     runtime.status.last_error = Some(error.message);
-                    runtime.status.consecutive_error_count += 1;
-                    if runtime.status.consecutive_error_count >= 3 {
+                    runtime.status.consecutive_error_count =
+                        runtime.status.consecutive_error_count.saturating_add(1);
+                    if runtime.status.consecutive_error_count >= 3 && !retryable {
                         runtime.status.running = false;
                         runtime.status.next_check_at_unix = None;
                         let _ = write_monitor_settings(
@@ -438,7 +440,15 @@ async fn monitor_loop(state: AppState, interval_seconds: u64) {
         let pending_orders = ai_plans::list(&state)
             .map(|plans| plans.iter().any(|plan| plan.submitted_side.is_some()))
             .unwrap_or(true);
-        let wait_seconds = if pending_orders {
+        let error_count = state
+            .auto_monitor
+            .lock()
+            .await
+            .status
+            .consecutive_error_count;
+        let wait_seconds = if error_count > 0 {
+            monitor_retry_seconds(interval_seconds, error_count)
+        } else if pending_orders {
             interval_seconds.min(30)
         } else {
             interval_seconds
@@ -446,6 +456,19 @@ async fn monitor_loop(state: AppState, interval_seconds: u64) {
         state.auto_monitor.lock().await.status.next_check_at_unix = Some(unix_now() + wait_seconds);
         sleep(Duration::from_secs(wait_seconds)).await;
     }
+}
+
+fn retryable_monitor_error(code: &str) -> bool {
+    matches!(
+        code,
+        "kis_request_failed" | "kis_token_request_failed" | "kis_response_read_failed"
+    )
+}
+
+fn monitor_retry_seconds(interval_seconds: u64, error_count: u32) -> u64 {
+    interval_seconds
+        .saturating_mul(1_u64 << error_count.saturating_sub(1).min(4))
+        .clamp(30, 900)
 }
 
 fn read_monitor_settings(state: &AppState) -> ApiResult<AutoMonitorSettings> {
@@ -1085,6 +1108,31 @@ fn file_error(
 mod tests {
     use super::*;
     use crate::risk_settings::RiskSettings;
+
+    #[test]
+    fn transport_failures_retry_without_classifying_configuration_errors_as_transient() {
+        for code in [
+            "kis_request_failed",
+            "kis_token_request_failed",
+            "kis_response_read_failed",
+        ] {
+            assert!(retryable_monitor_error(code));
+        }
+        for code in [
+            "kis_api_error",
+            "kis_not_configured",
+            "auto_trading_disabled",
+            "kis_response_parse_failed",
+        ] {
+            assert!(!retryable_monitor_error(code));
+        }
+        assert_eq!(monitor_retry_seconds(300, 1), 300);
+        assert_eq!(monitor_retry_seconds(300, 2), 600);
+        assert_eq!(monitor_retry_seconds(300, 3), 900);
+        assert_eq!(monitor_retry_seconds(300, u32::MAX), 900);
+        assert_eq!(monitor_retry_seconds(10, 1), 30);
+        assert_eq!(monitor_retry_seconds(u64::MAX, 10), 900);
+    }
 
     #[tokio::test]
     async fn persisted_plan_drives_buy_wait_fill_and_protective_sell() {
