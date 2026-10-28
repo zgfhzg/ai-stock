@@ -12,8 +12,15 @@ import {
   ShieldCheck,
   Trash2,
   Wifi,
+  ChartNoAxesCombined,
+  Globe2,
+  Wallet,
+  Settings2,
+  Pause,
 } from "lucide-react";
 import "./styles.css";
+import "./terminal.css";
+import { PricePlans } from "./PricePlans";
 
 type SystemStatus = {
   api: string;
@@ -570,6 +577,8 @@ const apiBaseUrl =
 
 function App() {
   const [activeMarket, setActiveMarket] = React.useState<MarketTab>("stocks");
+  const [domesticView, setDomesticView] = React.useState("overview");
+  const [refreshBusy, setRefreshBusy] = React.useState(false);
   const [status, setStatus] = React.useState<SystemStatus | null>(null);
   const [dashboardData, setDashboardData] = React.useState<DashboardData>({
     balance: null,
@@ -683,7 +692,7 @@ function App() {
     }
 
     loadDashboardData();
-  }, [status]);
+  }, [status?.kis?.configured, status?.kis?.account_configured]);
 
   React.useEffect(() => {
     if (status?.risk) {
@@ -770,7 +779,7 @@ function App() {
   }, [stockQuery]);
 
   function loadDashboardData() {
-    Promise.allSettled([
+    return Promise.allSettled([
       fetchJson<KisApiResponse>("/api/account/balance"),
       fetchJson<WatchlistItem[]>("/api/watchlist"),
     ])
@@ -792,6 +801,26 @@ function App() {
       .catch(() => {
         setError("일부 데이터를 불러오지 못했습니다. 조회 가능한 정보는 계속 표시합니다.");
       });
+  }
+
+  async function refreshWorkspace() {
+    setRefreshBusy(true);
+    setError(null);
+    try {
+      const latest = await fetchJson<SystemStatus>("/api/status");
+      setStatus(latest);
+      if (activeMarket === "stocks") {
+        await Promise.all([loadDashboardData(), loadAutoMonitorStatus(), loadAutoRunLogs(), loadNews()]);
+      } else if (activeMarket === "overseas-stocks") {
+        await loadOverseasMarketData();
+      } else {
+        await loadCryptoMarketData(cryptoMarketType);
+      }
+    } catch {
+      setError("최신 정보를 불러오지 못했습니다.");
+    } finally {
+      setRefreshBusy(false);
+    }
   }
 
   function handleAddWatchlistItem(event: React.FormEvent<HTMLFormElement>) {
@@ -1235,7 +1264,7 @@ function App() {
   function loadOverseasMarketData() {
     setError(null);
 
-    fetchJson<OverseasInstrument[]>("/api/overseas-stocks/instruments")
+    return fetchJson<OverseasInstrument[]>("/api/overseas-stocks/instruments")
       .then(async (items) => {
         const { quotes, quoteErrors } = await loadOverseasQuotes(items);
         setOverseasInstruments(items);
@@ -1278,7 +1307,7 @@ function App() {
   function loadCryptoMarketData(marketType: "spot" | "futures") {
     setError(null);
 
-    fetchJson<CryptoInstrument[]>(`/api/crypto/instruments/${marketType}`)
+    return fetchJson<CryptoInstrument[]>(`/api/crypto/instruments/${marketType}`)
       .then(async (items) => {
         const { quotes, quoteErrors } = await loadCryptoQuotes(marketType, items);
         setCryptoInstruments(items);
@@ -1326,22 +1355,21 @@ function App() {
           <CircleDollarSign size={24} />
           <span>AI Stock</span>
         </div>
-        <nav>
+        <nav aria-label="시장 선택">
           <button className={activeMarket === "stocks" ? "active" : ""} type="button" onClick={() => setActiveMarket("stocks")}>
-            국내 주식
+            <ChartNoAxesCombined size={18} /> 국내 주식
           </button>
           <button className={activeMarket === "overseas-stocks" ? "active" : ""} type="button" onClick={() => setActiveMarket("overseas-stocks")}>
-            해외 주식
+            <Globe2 size={18} /> 해외 주식
           </button>
           <button className={activeMarket === "crypto-spot" ? "active" : ""} type="button" onClick={() => setActiveMarket("crypto-spot")}>
-            코인 현물
+            <Coins size={18} /> 코인 현물
           </button>
           <button className={activeMarket === "crypto-futures" ? "active" : ""} type="button" onClick={() => setActiveMarket("crypto-futures")}>
-            코인 선물
+            <Activity size={18} /> 코인 선물
           </button>
-          <button type="button">전략</button>
-          <button type="button">설정</button>
         </nav>
+        <div className="sidebar-footer"><ShieldCheck size={16} /><span>{status?.trading_mode === "paper" ? "모의투자 계좌" : status?.trading_mode === "live" ? "실전투자 계좌" : "계좌 확인 중"}</span></div>
       </aside>
 
       <section className="workspace">
@@ -1350,15 +1378,18 @@ function App() {
             <p className="eyebrow">{formatMarketEyebrow(activeMarket)}</p>
             <h1>{formatMarketTitle(activeMarket)}</h1>
           </div>
-          <button className="danger-toggle" type="button">
+          <div className="topbar-actions">
+          <button className="icon-button" type="button" title="전체 새로고침" aria-label="전체 새로고침" disabled={refreshBusy} onClick={refreshWorkspace}><RefreshCw size={18} className={refreshBusy ? "spinning" : ""} /></button>
+          <span className="mode-badge">
             {activeMarket === "stocks"
-              ? "주식 실전 주문 OFF"
+              ? status?.trading_mode === "paper" ? "모의투자" : status?.live_trading_enabled ? "실전 주문 허용" : "실전 주문 차단"
               : activeMarket === "overseas-stocks"
                 ? "해외주식 실전 주문 OFF"
                 : status?.crypto.live_trading_enabled
                 ? "코인 실전 주문 ON"
                 : "코인 실전 주문 OFF"}
-          </button>
+          </span>
+          </div>
         </header>
 
         {error ? <div className="notice">{error}</div> : null}
@@ -1374,9 +1405,26 @@ function App() {
           />
         </section>
 
+        {activeMarket === "stocks" ? <>
+          <nav className="workspace-tabs" aria-label="국내 주식 화면">
+            {[
+              { id: "overview", label: "투자 현황", icon: <Wallet size={17} /> },
+              { id: "ai", label: "AI 매매", icon: <Bot size={17} /> },
+              { id: "news", label: "뉴스·분석", icon: <Newspaper size={17} /> },
+              { id: "orders", label: "주문·기록", icon: <Activity size={17} /> },
+              { id: "settings", label: "설정", icon: <Settings2 size={17} /> },
+            ].map((view) => <button key={view.id} type="button" aria-current={domesticView === view.id ? "page" : undefined} onClick={() => setDomesticView(view.id)}>{view.icon}{view.label}</button>)}
+          </nav>
+          <div className="trading-status-strip">
+            <div><span className={`status-dot ${autoMonitor?.running ? "running" : ""}`} /><strong>{autoMonitor ? autoMonitor.running ? "AI 자동매매 실행 중" : "AI 자동매매 중지" : "자동매매 확인 중"}</strong><span>{!status ? "대상 확인 중" : status.auto_universe_mode === "market" ? "국내장 전체" : "관심종목"}</span></div>
+            <button className="text-button" type="button" onClick={() => setDomesticView("ai")}><Bot size={15} /> 매매 현황</button>
+          </div>
+          {autoMonitor?.last_error ? <div className="notice" role="alert">자동매매 오류 · {autoMonitor.last_error}</div> : null}
+        </> : null}
+
         {activeMarket === "stocks" ? (
         <section className="content-grid">
-          <div className="panel">
+          <div className="panel account-panel" hidden={domesticView !== "overview"}>
             <div className="panel-header">
               <h2>계좌 요약</h2>
               <span>{status?.kis?.account_configured ? "계좌 설정됨" : "모의투자 연결 대기"}</span>
@@ -1386,7 +1434,7 @@ function App() {
                 <div><dt>총 평가금액</dt><dd>{formatKrwText(accountSummary.tot_evlu_amt)}</dd></div>
                 <div><dt>예수금</dt><dd>{formatKrwText(accountSummary.dnca_tot_amt)}</dd></div>
                 <div><dt>주식 평가금액</dt><dd>{formatKrwText(accountSummary.scts_evlu_amt)}</dd></div>
-                <div><dt>평가손익</dt><dd>{formatKrwText(accountSummary.evlu_pfls_smtl_amt)}</dd></div>
+                <div><dt>평가손익</dt><dd className={formatProfitClass(accountSummary.evlu_pfls_smtl_amt)}>{formatSignedKrw(accountSummary.evlu_pfls_smtl_amt)}</dd></div>
               </dl>
             ) : (
               <div className="empty-state">
@@ -1397,7 +1445,7 @@ function App() {
             )}
           </div>
 
-          <div className="panel">
+          <div className="panel watchlist-panel" hidden={domesticView !== "overview"}>
             <div className="panel-header">
               <h2>관심 종목</h2>
               <span>{watchlist.length}개</span>
@@ -1452,7 +1500,7 @@ function App() {
             </div>
           </div>
 
-          <div className="panel wide news-panel">
+          <div className="panel wide news-panel" hidden={domesticView !== "news"}>
             <div className="panel-header">
               <div className="panel-title-with-icon">
                 <Newspaper size={19} />
@@ -1909,7 +1957,7 @@ function App() {
             )}
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "overview"}>
             <div className="panel-header">
               <h2>보유 주식</h2>
               <span>{domesticHoldings.length}종목</span>
@@ -1959,7 +2007,17 @@ function App() {
             )}
           </div>
 
-          <div className="panel wide">
+          <div className="wide" hidden={domesticView !== "overview" && domesticView !== "ai"}>
+            <PricePlans apiBaseUrl={apiBaseUrl} />
+          </div>
+          <section className="risk-overview wide" hidden={domesticView !== "overview"} aria-label="운용 한도">
+            <div><span>운용예산</span><strong>{formatKrw(status?.risk.auto_trading_budget_krw)}</strong></div>
+            <div><span>일일 손실 제한</span><strong>{status ? `${status.risk.daily_max_loss_ratio * 100}%` : "—"}</strong></div>
+            <div><span>종목당 최대 비중</span><strong>{status ? `${status.risk.max_position_ratio * 100}%` : "—"}</strong></div>
+            <button className="icon-button" type="button" title="위험관리 설정" aria-label="위험관리 설정" onClick={() => setDomesticView("settings")}><Settings2 size={18} /></button>
+          </section>
+
+          <div className="panel wide" hidden={domesticView !== "orders"}>
             <div className="panel-header">
               <h2>수동 모의 주문</h2>
               <span>지정가 전용</span>
@@ -2005,7 +2063,7 @@ function App() {
             ) : null}
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "orders"}>
             <div className="panel-header">
               <h2>주문 로그</h2>
               <span>최근 50건</span>
@@ -2023,7 +2081,7 @@ function App() {
             )}
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "settings"}>
             <div className="panel-header">
               <h2>리스크 제한</h2>
               <span>주문 보호장치</span>
@@ -2115,7 +2173,7 @@ function App() {
             </form>
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "orders"}>
             <div className="panel-header">
               <h2>자동매매 규칙</h2>
               <span>{tradingRules.length}개</span>
@@ -2262,7 +2320,7 @@ function App() {
             )}
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "ai"}>
             <div className="panel-header">
               <h2>AI 자율 자동매매</h2>
               <span>{autoMonitor?.running ? "감시 중" : "중지됨"}</span>
@@ -2289,6 +2347,7 @@ function App() {
                   onClick={autoMonitor?.running ? handleStopAutoMonitor : handleStartAutoMonitor}
                   disabled={autoMonitorBusy}
                 >
+                  {autoMonitor?.running ? <Pause size={16} /> : <PlayCircle size={16} />}
                   <span>{autoMonitorBusy ? "처리 중" : autoMonitor?.running ? "자동매매 중지" : "자동매매 시작"}</span>
                 </button>
               </div>
@@ -2311,7 +2370,8 @@ function App() {
                       {decision.price_plan ? (
                         <span>
                           {decision.price_plan.plan.action === "sell" ? "목표 매도가" : "진입 기준가"} {formatKrw(decision.price_plan.plan.entry_price)} · 익절 {formatKrw(decision.price_plan.plan.take_profit_price)} · 손절 {formatKrw(decision.price_plan.plan.stop_loss_price)} · 계획 {decision.price_plan.plan.quantity}주
-                          {` · ${formatRunTime(decision.price_plan.expires_at_unix)}까지 · ${decision.price_plan.model}`}
+                          {decision.price_plan.expires_at_unix <= Date.now() / 1000 ? " · 만료된 계획" : ` · ${formatRunTime(decision.price_plan.expires_at_unix)}까지`}
+                          {` · ${decision.price_plan.model}`}
                           {decision.price_plan.plan.session === "opening_auction" ? " · 시초가 동시호가" : " · 정규장"}
                         </span>
                       ) : null}
@@ -2330,7 +2390,7 @@ function App() {
             )}
           </div>
 
-          <div className="panel wide">
+          <div className="panel wide" hidden={domesticView !== "ai" && domesticView !== "orders"}>
             <div className="panel-header">
               <h2>자동매매 판단 로그</h2>
               <span>{autoRunLogs.length > 0 ? `최근 ${autoRunLogs.length}회` : "기록 없음"}</span>
