@@ -1,0 +1,26 @@
+name: Build Raspberry Pi images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API and web images
+        run: |
+          docker build --label org.opencontainers.image.revision="$GITHUB_SHA" -t ai-stock-api:latest apps/api
+          docker build --label org.opencontainers.image.revision="$GITHUB_SHA" -t ai-stock-web:latest apps/web
+      - name: Export deployment images
+        run: docker save ai-stock-api:latest ai-stock-web:latest | gzip > pi-images.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-images-${{ github.sha }}
+          path: pi-images.tar.gz
+          retention-days: 3
+          compression-level: 0
