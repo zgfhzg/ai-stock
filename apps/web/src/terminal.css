@@ -181,3 +181,9 @@ h2 { font-size: 17px; }
   .summary-grid { grid-template-columns: 1fr 1fr; }
   .risk-form { grid-template-columns: 1fr; }
 }
+.order-log-row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.order-log-details, .order-log-profit { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.order-log-details small, .order-log-profit small { color: #68717d; font-weight: 400; }
+.order-log-profit { align-content: center; }
+.profit-positive { color: #d32f45; }
+.profit-negative { color: #2463ce; }

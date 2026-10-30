@@ -2070,9 +2070,19 @@ function App() {
             </div>
             {orderLogs.length > 0 ? (
               <div className="order-log-list">
-                {orderLogs.slice(0, 5).map((log, index) => (
+                {orderLogs.map((log, index) => (
                   <div className="order-log-row" key={index}>
-                    <span>{formatOrderLog(log)}</span>
+                    <div className="order-log-details">
+                      <strong>{String(log.stock_name || "종목명 미확인")} <small>{(log.response as OrderResponse)?.symbol}</small></strong>
+                      <span>{formatOrderLog(log)}</span>
+                      <small>{typeof log.timestamp_unix === "number" ? new Date(log.timestamp_unix * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "시간 미확인"}</small>
+                    </div>
+                    <div className={`order-log-profit ${typeof log.profit_krw === "number" ? log.profit_krw > 0 ? "profit-positive" : log.profit_krw < 0 ? "profit-negative" : "" : ""}`}>
+                      {typeof log.profit_krw === "number" && typeof log.profit_percent === "number" ? <>
+                        <strong>{log.profit_krw > 0 ? "이익 +" : log.profit_krw < 0 ? "손실 " : "손익 "}{Math.round(log.profit_krw).toLocaleString("ko-KR")}원 ({log.profit_percent > 0 ? "+" : ""}{log.profit_percent.toFixed(2)}%)</strong>
+                        <small>체결분 매매손익 · 수수료·세금 제외</small>
+                      </> : <span>{(log.response as OrderResponse)?.accepted === false ? "거절 · 손익 없음" : (log.response as OrderResponse)?.side === "buy" ? "매수 · 실현손익 없음" : "손익 미확인 · 체결금액 또는 매입원가 없음"}</span>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -3046,7 +3056,9 @@ function formatOrderLog(log: Record<string, unknown>) {
 
   const side = response.side === "buy" ? "매수" : "매도";
   const status = response.accepted ? "접수" : "거절";
-  return `${status} · ${side} ${response.symbol} ${response.quantity}주 @ ${formatKrw(response.price)}`;
+  const execution = log.execution as { filled_quantity?: number; remaining_quantity?: number } | undefined;
+  const fill = execution ? ` · 체결 ${execution.filled_quantity ?? 0}주 / 잔량 ${execution.remaining_quantity ?? 0}주` : " · 체결 미확인";
+  return `${status} · ${side} ${response.quantity}주 · 지정가 ${formatKrw(response.price)} · 주문금액 ${formatKrw(response.order_amount_krw)}${response.accepted ? fill : ""}`;
 }
 
 function formatAutoSummary(run: AutoRunResponse) {

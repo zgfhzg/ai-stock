@@ -32,6 +32,7 @@ pub struct OrderResponse {
     pub quantity: u32,
     pub price: u64,
     pub order_amount_krw: u64,
+    pub purchase_price: Option<f64>,
     pub kis: KisApiResponse,
 }
 
@@ -45,6 +46,30 @@ struct OrderLogEntry<'a> {
 pub async fn place(state: &AppState, request: OrderRequest) -> ApiResult<OrderResponse> {
     let normalized = validate_proposed_order(state, request)?;
     validate_live_trading_guard(state)?;
+
+    // Preserve the cost basis before a sell removes the holding from the account.
+    let purchase_price = if normalized.side == "sell" {
+        match kis::get_balance(state).await {
+            Ok(balance) if balance.rt_cd.as_deref() == Some("0") => balance
+                .output1
+                .as_ref()
+                .and_then(Value::as_array)
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|row| row["pdno"].as_str() == Some(&normalized.symbol))
+                })
+                .and_then(|row| {
+                    row["pchs_avg_pric"]
+                        .as_str()
+                        .and_then(|v| v.replace(',', "").parse::<f64>().ok())
+                        .or_else(|| row["pchs_avg_pric"].as_f64())
+                })
+                .filter(|v| v.is_finite() && *v > 0.0),
+            _ => None,
+        }
+    } else {
+        None
+    };
 
     let kis = kis::place_cash_order(
         state,
@@ -63,6 +88,7 @@ pub async fn place(state: &AppState, request: OrderRequest) -> ApiResult<OrderRe
         quantity: normalized.quantity,
         price: normalized.price,
         order_amount_krw: order_amount(&normalized),
+        purchase_price,
         kis,
     };
 
@@ -91,7 +117,82 @@ pub fn list_logs(state: &AppState) -> ApiResult<Vec<Value>> {
         .collect::<Vec<_>>();
     rows.reverse();
     rows.truncate(50);
+    let db = rusqlite::Connection::open_with_flags(
+        &state.config.news_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok();
+    for row in &mut rows {
+        let symbol = row["response"]["symbol"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if let Ok(Some(stock)) = crate::stocks::resolve_news_stock(state, "", &symbol) {
+            row["stock_name"] = Value::String(stock.name);
+        }
+        if let Some(db) = &db {
+            let order_no = row["response"]["kis"]["output"]["ODNO"]
+                .as_str()
+                .or_else(|| row["response"]["kis"]["output"]["odno"].as_str())
+                .unwrap_or_default();
+            if !order_no.is_empty() && row["response"]["accepted"].as_bool() == Some(true) {
+                let raw: Result<String, _> = db.query_row(
+                    "SELECT record_json FROM ai_order_events WHERE symbol=?1
+                     AND json_extract(record_json, '$.broker_order.order_no')=?2
+                     AND json_extract(record_json, '$.broker_order.order_date')=strftime('%Y%m%d', ?3, 'unixepoch', '+9 hours')
+                     AND json_extract(record_json, '$.broker_order.side')=?4 ORDER BY id DESC LIMIT 1",
+                    rusqlite::params![symbol, order_no, row["timestamp_unix"].as_u64().unwrap_or(0), row["response"]["side"].as_str().unwrap_or_default()],
+                    |r| r.get(0));
+                if let Ok(raw) = raw {
+                    if let Ok(record) = serde_json::from_str::<Value>(&raw) {
+                        row["execution"] = record["broker_order"].clone();
+                    }
+                }
+            }
+        }
+        let basis = row["response"]["purchase_price"].as_f64();
+        let amount = row["execution"]["filled_amount_krw"].as_f64();
+        let quantity = row["execution"]["filled_quantity"].as_u64().unwrap_or(0);
+        if row["response"]["side"].as_str() == Some("sell")
+            && row["response"]["accepted"].as_bool() == Some(true)
+        {
+            if let Some((profit, rate)) = realized_profit(basis, amount, quantity) {
+                row["profit_krw"] = serde_json::json!(profit);
+                row["profit_percent"] = serde_json::json!(rate);
+            }
+        }
+    }
     Ok(rows)
+}
+
+fn realized_profit(basis: Option<f64>, amount: Option<f64>, quantity: u64) -> Option<(f64, f64)> {
+    let cost = basis? * quantity as f64;
+    let proceeds = amount?;
+    if !cost.is_finite() || cost <= 0.0 || !proceeds.is_finite() || proceeds <= 0.0 {
+        return None;
+    }
+    Some((proceeds - cost, (proceeds / cost - 1.0) * 100.0))
+}
+
+#[cfg(test)]
+mod profit_tests {
+    use super::realized_profit;
+    #[test]
+    fn actual_partial_fill_profit_and_loss() {
+        let (profit, rate) = realized_profit(Some(100.0), Some(220.0), 2).unwrap();
+        assert_eq!(profit, 20.0);
+        assert!((rate - 10.0).abs() < 0.000001);
+        assert_eq!(
+            realized_profit(Some(100.0), Some(180.0), 2).unwrap().0,
+            -20.0
+        );
+    }
+    #[test]
+    fn missing_or_unfilled_is_not_zero_profit() {
+        assert!(realized_profit(None, Some(200.0), 2).is_none());
+        assert!(realized_profit(Some(100.0), None, 2).is_none());
+        assert!(realized_profit(Some(100.0), Some(200.0), 0).is_none());
+    }
 }
 
 fn normalize_request(request: OrderRequest) -> ApiResult<OrderRequest> {

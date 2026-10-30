@@ -21,6 +21,8 @@ pub struct TrackedOrder {
     pub price: u64,
     pub quantity: u32,
     pub filled_quantity: u32,
+    #[serde(default)]
+    pub filled_amount_krw: Option<f64>,
     pub remaining_quantity: u32,
     pub last_review_at_unix: u64,
     pub cancel_requested: bool,
@@ -37,6 +39,7 @@ struct BrokerStatus {
     order_no: String,
     branch_no: String,
     filled: u32,
+    filled_amount: Option<f64>,
     remaining: u32,
     closed: bool,
 }
@@ -59,6 +62,7 @@ pub fn pending(side: &str, price: u64, quantity: u32, now: u64) -> anyhow::Resul
         price,
         quantity,
         filled_quantity: 0,
+        filled_amount_krw: None,
         remaining_quantity: quantity,
         last_review_at_unix: now,
         cancel_requested: false,
@@ -289,6 +293,11 @@ fn match_status(record: &StoredPlan, rows: &[Value]) -> anyhow::Result<BrokerSta
         branch_no: text(row, &["ord_gno_brno", "krx_fwdg_ord_orgno"])
             .unwrap_or_else(|| tracked.branch_no.clone()),
         filled,
+        filled_amount: row["tot_ccld_amt"]
+            .as_str()
+            .and_then(|v| v.replace(',', "").parse::<f64>().ok())
+            .or_else(|| row["tot_ccld_amt"].as_f64())
+            .filter(|v| v.is_finite() && *v > 0.0),
         remaining: if closed { 0 } else { remaining },
         closed,
     })
@@ -345,11 +354,13 @@ pub async fn manage(
         .ok_or_else(|| anyhow::anyhow!("Missing submitted side"))?;
     let tracked = record.broker_order.as_mut().unwrap();
     let changed = tracked.filled_quantity != status.filled
+        || tracked.filled_amount_krw != status.filled_amount
         || tracked.remaining_quantity != status.remaining
         || tracked.order_no != status.order_no;
     tracked.order_no = status.order_no;
     tracked.branch_no = status.branch_no;
     tracked.filled_quantity = status.filled;
+    tracked.filled_amount_krw = status.filled_amount;
     tracked.remaining_quantity = status.remaining;
     if status.closed {
         let balance_matches = if side == "buy" {
