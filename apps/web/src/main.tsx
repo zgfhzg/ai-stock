@@ -1430,12 +1430,24 @@ function App() {
               <span>{status?.kis?.account_configured ? "계좌 설정됨" : "모의투자 연결 대기"}</span>
             </div>
             {accountSummary ? (
+              <>
               <dl className="summary-grid">
-                <div><dt>총 평가금액</dt><dd>{formatKrwText(accountSummary.tot_evlu_amt)}</dd></div>
-                <div><dt>예수금</dt><dd>{formatKrwText(accountSummary.dnca_tot_amt)}</dd></div>
+                <div><dt>총 평가금액 · 현금·주식 포함</dt><dd>{formatKrwText(accountSummary.tot_evlu_amt)}</dd></div>
+                <div><dt>결제 반영 후 현금 (D+2)</dt><dd>{formatKrwText(accountSummary.prvs_rcdl_excc_amt)}</dd></div>
                 <div><dt>주식 평가금액</dt><dd>{formatKrwText(accountSummary.scts_evlu_amt)}</dd></div>
-                <div><dt>평가손익</dt><dd className={formatProfitClass(accountSummary.evlu_pfls_smtl_amt)}>{formatSignedKrw(accountSummary.evlu_pfls_smtl_amt)}</dd></div>
+                <div><dt>보유 주식 평가손익</dt><dd className={formatProfitClass(accountSummary.evlu_pfls_smtl_amt)}>{formatSignedKrw(accountSummary.evlu_pfls_smtl_amt)}</dd></div>
               </dl>
+              <details className="settlement-details">
+                <summary>예수금·결제 내역</summary>
+                <dl>
+                  <div><dt>현재 예수금 (결제 전)</dt><dd>{formatKrwText(accountSummary.dnca_tot_amt)}</dd></div>
+                  <div><dt>D+1 정산금액</dt><dd>{formatKrwText(accountSummary.nxdy_excc_amt)}</dd></div>
+                  <div><dt>오늘 매수금액</dt><dd>{formatKrwText(accountSummary.thdt_buy_amt)}</dd></div>
+                  <div><dt>오늘 매도금액</dt><dd>{formatKrwText(accountSummary.thdt_sll_amt)}</dd></div>
+                  <div><dt>오늘 제비용</dt><dd>{formatKrwText(accountSummary.thdt_tlex_amt)}</dd></div>
+                </dl>
+              </details>
+              </>
             ) : (
               <div className="empty-state">
                 {status?.kis?.configured

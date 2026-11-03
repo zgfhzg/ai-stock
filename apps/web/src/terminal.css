@@ -187,3 +187,8 @@ h2 { font-size: 17px; }
 .order-log-profit { align-content: center; }
 .profit-positive { color: #d32f45; }
 .profit-negative { color: #2463ce; }
+.settlement-details { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 13px; }
+.settlement-details summary { cursor: pointer; color: var(--muted); }
+.settlement-details dl { margin-bottom: 0; }
+.settlement-details dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 6px 0; }
+.settlement-details dd { margin: 0; font-variant-numeric: tabular-nums; }
