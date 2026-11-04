@@ -192,3 +192,11 @@ h2 { font-size: 17px; }
 .settlement-details dl { margin-bottom: 0; }
 .settlement-details dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 6px 0; }
 .settlement-details dd { margin: 0; font-variant-numeric: tabular-nums; }
+.account-performance { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.account-performance dl { display: grid; gap: 14px; margin: 0; }
+.account-performance dt { font-size: 12px; color: var(--muted); }
+.account-performance dd { margin: 6px 0 0; font-size: 18px; overflow-wrap: anywhere; }
+.account-performance form { display: flex; align-items: end; gap: 8px; margin-top: 12px; }
+.account-performance label { display: grid; gap: 6px; font-size: 12px; min-width: 0; flex: 1; }
+.account-performance input { width: 100%; min-width: 0; }
+.account-performance button { flex-shrink: 0; }

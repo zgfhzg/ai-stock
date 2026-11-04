@@ -1,4 +1,5 @@
 import React from "react";
+import { AccountPerformance } from "./AccountPerformance";
 import ReactDOM from "react-dom/client";
 import {
   Activity,
@@ -1447,6 +1448,7 @@ function App() {
                   <div><dt>오늘 제비용</dt><dd>{formatKrwText(accountSummary.thdt_tlex_amt)}</dd></div>
                 </dl>
               </details>
+              <AccountPerformance apiBaseUrl={apiBaseUrl} total={accountSummary.tot_evlu_amt} />
               </>
             ) : (
               <div className="empty-state">

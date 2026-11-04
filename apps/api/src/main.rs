@@ -1,3 +1,4 @@
+mod account_performance;
 mod ai_plans;
 mod auto_trading;
 mod broker_orders;

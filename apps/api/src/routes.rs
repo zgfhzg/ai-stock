@@ -47,6 +47,10 @@ pub fn app_router() -> Router<AppState> {
         .route("/api/kis/config", get(kis_config))
         .route("/api/kis/token", post(kis_token))
         .route("/api/account/balance", get(account_balance))
+        .route(
+            "/api/account/principal",
+            get(crate::account_performance::get).post(crate::account_performance::save),
+        )
         .route("/api/market/price/:symbol", get(market_price))
         .route("/api/stocks/search", get(search_stocks))
         .route(
