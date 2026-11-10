@@ -461,7 +461,10 @@ async fn monitor_loop(state: AppState, interval_seconds: u64) {
 fn retryable_monitor_error(code: &str) -> bool {
     matches!(
         code,
-        "kis_request_failed" | "kis_token_request_failed" | "kis_response_read_failed"
+        "kis_request_failed"
+            | "kis_token_request_failed"
+            | "kis_response_read_failed"
+            | "kis_rate_limited"
     )
 }
 
@@ -1115,6 +1118,7 @@ mod tests {
             "kis_request_failed",
             "kis_token_request_failed",
             "kis_response_read_failed",
+            "kis_rate_limited",
         ] {
             assert!(retryable_monitor_error(code));
         }

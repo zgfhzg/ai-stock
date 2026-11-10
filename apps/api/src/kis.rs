@@ -108,6 +108,14 @@ pub async fn get_access_token(state: &AppState) -> ApiResult<AccessToken> {
         )
     })?;
 
+    if is_rate_limit(status.as_u16(), &token_text) {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "kis_rate_limited",
+            "증권사 요청 한도 초과로 대기 중입니다. 자동 재시도합니다.",
+        ));
+    }
+
     if !status.is_success() {
         return Err((
             StatusCode::BAD_GATEWAY,
@@ -453,6 +461,13 @@ async fn parse_kis_response(response: Response) -> ApiResult<Value> {
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, "kis_response_read_failed", error))?;
 
+    if is_rate_limit(status.as_u16(), &text) {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "kis_rate_limited",
+            "증권사 요청 한도 초과로 대기 중입니다. 자동 재시도합니다.",
+        ));
+    }
     if !status.is_success() {
         return Err((
             StatusCode::BAD_GATEWAY,
@@ -483,6 +498,30 @@ async fn parse_kis_response(response: Response) -> ApiResult<Value> {
     }
 
     Ok(value)
+}
+
+fn is_rate_limit(status: u16, body: &str) -> bool {
+    status == 429
+        || serde_json::from_str::<Value>(body)
+            .ok()
+            .is_some_and(|value| value["msg_cd"].as_str() == Some("EGW00215"))
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::is_rate_limit;
+    #[test]
+    fn recognizes_broker_limit_on_success_and_error_http_statuses() {
+        for status in [200, 400, 500] {
+            assert!(is_rate_limit(
+                status,
+                r#"{"rt_cd":"1","msg_cd":"EGW00215"}"#
+            ));
+        }
+        assert!(is_rate_limit(429, "Too many requests"));
+        assert!(!is_rate_limit(500, r#"{"msg_cd":"OTHER"}"#));
+        assert!(!is_rate_limit(200, r#"{"rt_cd":"0"}"#));
+    }
 }
 
 pub(crate) fn to_kis_response(value: Value) -> KisApiResponse {

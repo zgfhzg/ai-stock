@@ -1417,6 +1417,10 @@ function App() {
             ].map((view) => <button key={view.id} type="button" aria-current={domesticView === view.id ? "page" : undefined} onClick={() => setDomesticView(view.id)}>{view.icon}{view.label}</button>)}
           </nav>
           <div className="trading-status-strip">
+            <label className="auto-trading-toggle">
+              <input type="checkbox" role="switch" aria-label="AI 자동매매" checked={autoMonitor?.running ?? false} disabled={!autoMonitor || autoMonitorBusy} onChange={() => autoMonitor?.running ? handleStopAutoMonitor() : handleStartAutoMonitor()} />
+              <span>{autoMonitorBusy ? "변경 중" : "자동매매"}</span>
+            </label>
             <div><span className={`status-dot ${autoMonitor?.running ? "running" : ""}`} /><strong>{autoMonitor ? autoMonitor.running ? "AI 자동매매 실행 중" : "AI 자동매매 중지" : "자동매매 확인 중"}</strong><span>{!status ? "대상 확인 중" : status.auto_universe_mode === "market" ? "국내장 전체" : "관심종목"}</span></div>
             <button className="text-button" type="button" onClick={() => setDomesticView("ai")}><Bot size={15} /> 매매 현황</button>
           </div>
@@ -2366,14 +2370,6 @@ function App() {
                   <option value={300}>5분</option>
                   <option value={900}>15분</option>
                 </select>
-                <button
-                  type="button"
-                  onClick={autoMonitor?.running ? handleStopAutoMonitor : handleStartAutoMonitor}
-                  disabled={autoMonitorBusy}
-                >
-                  {autoMonitor?.running ? <Pause size={16} /> : <PlayCircle size={16} />}
-                  <span>{autoMonitorBusy ? "처리 중" : autoMonitor?.running ? "자동매매 중지" : "자동매매 시작"}</span>
-                </button>
               </div>
               <div>
                 <strong>{formatAutoMonitorTitle(autoMonitor, autoRun, autoRunLogs)}</strong>
