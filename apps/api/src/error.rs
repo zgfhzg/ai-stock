@@ -3,7 +3,7 @@ use serde::Serialize;
 
 pub type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ApiError {
     pub code: String,
     pub message: String,

@@ -4,6 +4,7 @@ mod auto_trading;
 mod broker_orders;
 mod config;
 mod crypto;
+mod dashboard_cache;
 mod error;
 mod kis;
 mod news;

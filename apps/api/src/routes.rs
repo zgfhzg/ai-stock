@@ -230,14 +230,26 @@ async fn kis_token(State(state): State<AppState>) -> ApiResult<Json<kis::TokenSt
 }
 
 async fn account_balance(State(state): State<AppState>) -> ApiResult<Json<kis::KisApiResponse>> {
-    Ok(Json(kis::get_balance(&state).await?))
+    Ok(Json(
+        state
+            .dashboard_cache
+            .get("balance".into(), || kis::get_balance(&state))
+            .await?,
+    ))
 }
 
 async fn market_price(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> ApiResult<Json<kis::KisApiResponse>> {
-    Ok(Json(kis::get_price(&state, &symbol).await?))
+    Ok(Json(
+        state
+            .dashboard_cache
+            .get(format!("price:{symbol}"), || {
+                kis::get_price(&state, &symbol)
+            })
+            .await?,
+    ))
 }
 
 async fn search_stocks(

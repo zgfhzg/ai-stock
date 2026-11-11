@@ -671,17 +671,12 @@ function App() {
   const [cryptoOrderResult, setCryptoOrderResult] = React.useState<CryptoOrderResponse | null>(null);
   const [cryptoOrderLogs, setCryptoOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const accountSummary = dashboardData.balance?.output2?.[0];
+  const dashboardRequest = React.useRef<Promise<void> | null>(null);
   const domesticHoldings = (dashboardData.balance?.output1 ?? []) as DomesticHolding[];
   const cryptoMarketType = activeMarket === "crypto-futures" ? "futures" : "spot";
 
   React.useEffect(() => {
-    fetch(`${apiBaseUrl}/api/status`)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("API status request failed");
-        }
-        return response.json();
-      })
+    fetchDashboardJson<SystemStatus>("/api/status")
       .then(setStatus)
       .then(() => Promise.all([loadAutoRunLogs(), loadAutoMonitorStatus(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs(), loadNews()]))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
@@ -744,10 +739,12 @@ function App() {
   }, [activeMarket]);
 
   React.useEffect(() => {
+    let busy = false;
     const timer = window.setInterval(() => {
-      loadRuleMonitorStatus();
-      loadRuleCheckLogs();
-      loadAutoMonitorStatus();
+      if (busy || document.hidden) return;
+      busy = true;
+      Promise.allSettled([loadRuleMonitorStatus(), loadRuleCheckLogs(), loadAutoMonitorStatus()])
+        .finally(() => { busy = false; });
     }, 5000);
 
     return () => window.clearInterval(timer);
@@ -780,35 +777,35 @@ function App() {
   }, [stockQuery]);
 
   function loadDashboardData() {
-    return Promise.allSettled([
-      fetchJson<KisApiResponse>("/api/account/balance"),
-      fetchJson<WatchlistItem[]>("/api/watchlist"),
-    ])
-      .then(async ([balanceResult, watchlistResult]) => {
-        const balance = balanceResult.status === "fulfilled" ? balanceResult.value : null;
-        const items = watchlistResult.status === "fulfilled" ? watchlistResult.value : [];
-        const { quotes, quoteErrors } = await loadQuotes(items);
+    if (dashboardRequest.current) return dashboardRequest.current;
+    const reportError = () => setError("일부 조회가 지연되거나 실패했습니다. 표시된 이전 값은 최신 정보가 아닐 수 있습니다.");
+    const request = Promise.allSettled([
+      fetchDashboardJson<KisApiResponse>("/api/account/balance")
+        .then(balance => setDashboardData(current => ({ ...current, balance })))
+        .catch(reportError),
+      fetchDashboardJson<WatchlistItem[]>("/api/watchlist").then(async items => {
         setWatchlist(items);
         if (items[0] && orderSymbol === "005930") {
           setOrderSymbol(items[0].symbol);
         }
-        setDashboardData({ balance, quotes, quoteErrors });
-        if (balanceResult.status === "rejected" || watchlistResult.status === "rejected") {
-          setError("일부 데이터를 불러오지 못했습니다. 조회 가능한 정보는 계속 표시합니다.");
-        }
-        return fetchJson<Array<Record<string, unknown>>>("/api/orders");
-      })
-      .then(setOrderLogs)
-      .catch(() => {
-        setError("일부 데이터를 불러오지 못했습니다. 조회 가능한 정보는 계속 표시합니다.");
-      });
+        await loadQuotes(items, (symbol, quote, error) => setDashboardData(current => {
+          const quoteErrors = { ...current.quoteErrors };
+          if (error) quoteErrors[symbol] = error;
+          else delete quoteErrors[symbol];
+          return { ...current, quotes: quote ? { ...current.quotes, [symbol]: quote } : current.quotes, quoteErrors };
+        }));
+      }).catch(reportError),
+      fetchDashboardJson<Array<Record<string, unknown>>>("/api/orders").then(setOrderLogs).catch(reportError),
+    ]).then(() => undefined).finally(() => { dashboardRequest.current = null; });
+    dashboardRequest.current = request;
+    return request;
   }
 
   async function refreshWorkspace() {
     setRefreshBusy(true);
     setError(null);
     try {
-      const latest = await fetchJson<SystemStatus>("/api/status");
+      const latest = await fetchDashboardJson<SystemStatus>("/api/status");
       setStatus(latest);
       if (activeMarket === "stocks") {
         await Promise.all([loadDashboardData(), loadAutoMonitorStatus(), loadAutoRunLogs(), loadNews()]);
@@ -910,7 +907,7 @@ function App() {
   }
 
   function loadAutoMonitorStatus() {
-    return fetchJson<AutoMonitorStatus>("/api/auto-trading/monitor")
+    return fetchDashboardJson<AutoMonitorStatus>("/api/auto-trading/monitor")
       .then((monitor) => {
         setAutoMonitor(monitor);
         setAutoMonitorIntervalSeconds(monitor.interval_seconds);
@@ -1114,7 +1111,7 @@ function App() {
   }
 
   function loadRuleMonitorStatus() {
-    return fetchJson<RuleMonitorStatus>("/api/auto-trading/rules/monitor")
+    return fetchDashboardJson<RuleMonitorStatus>("/api/auto-trading/rules/monitor")
       .then((status) => {
         setRuleMonitor(status);
         setRuleMonitorIntervalSeconds(status.interval_seconds);
@@ -1127,7 +1124,7 @@ function App() {
   }
 
   function loadRuleCheckLogs() {
-    return fetchJson<RuleCheckLog[]>("/api/auto-trading/rules/monitor/logs")
+    return fetchDashboardJson<RuleCheckLog[]>("/api/auto-trading/rules/monitor/logs")
       .then(setRuleCheckLogs)
       .catch(() => setRuleCheckLogs([]));
   }
@@ -3591,7 +3588,7 @@ function formatCryptoOrderLog(log: Record<string, unknown>) {
   return `${response.status} · ${sideLabels[response.side] ?? response.side} ${response.symbol} ${response.quantity} @ ${formatUsdt(response.price)}${leverage}`;
 }
 
-async function loadQuotes(items: WatchlistItem[]) {
+async function loadQuotes(items: WatchlistItem[], onResult?: (symbol: string, quote?: KisApiResponse, error?: string) => void) {
   const quotes: Record<string, KisApiResponse> = {};
   const quoteErrors: Record<string, string> = {};
 
@@ -3601,9 +3598,11 @@ async function loadQuotes(items: WatchlistItem[]) {
     }
 
     try {
-      quotes[item.symbol] = await fetchJsonWithRetry<KisApiResponse>(`/api/market/price/${item.symbol}`);
+      quotes[item.symbol] = await fetchDashboardJson<KisApiResponse>(`/api/market/price/${item.symbol}`);
+      onResult?.(item.symbol, quotes[item.symbol]);
     } catch (error) {
       quoteErrors[item.symbol] = error instanceof Error ? error.message : "현재가 조회 실패";
+      onResult?.(item.symbol, undefined, quoteErrors[item.symbol]);
     }
   }
 
@@ -3673,6 +3672,17 @@ function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return response.json();
   });
+}
+
+async function fetchDashboardJson<T>(path: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    return await fetchJson<T>(path, { signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("조회 대기시간 초과 · 잠시 후 새로고침해 주세요.");
+    throw error;
+  } finally { window.clearTimeout(timer); }
 }
 
 function extractErrorMessage(text: string): string {

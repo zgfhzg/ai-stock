@@ -28,7 +28,7 @@ pub struct TokenStatus {
     pub cached: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct KisApiResponse {
     pub rt_cd: Option<String>,
     pub msg_cd: Option<String>,
