@@ -672,6 +672,7 @@ function App() {
   const [cryptoOrderLogs, setCryptoOrderLogs] = React.useState<Array<Record<string, unknown>>>([]);
   const accountSummary = dashboardData.balance?.output2?.[0];
   const dashboardRequest = React.useRef<Promise<void> | null>(null);
+  const newsRequest = React.useRef<Promise<void> | null>(null);
   const domesticHoldings = (dashboardData.balance?.output1 ?? []) as DomesticHolding[];
   const cryptoMarketType = activeMarket === "crypto-futures" ? "futures" : "spot";
 
@@ -919,19 +920,21 @@ function App() {
   }
 
   function loadNews() {
-    return Promise.all([
-      fetchJson<NewsEventGroup[]>("/api/news/events"),
-      fetchJson<NewsCollectorStatus>("/api/news/status"),
-      fetchJson<StockNewsGroup[]>("/api/news/stocks"),
-      fetchJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
-      fetchJson<AiStockCandidate[]>("/api/news/candidates"),
-      fetchJson<NewsTradeDecision[]>("/api/news/trade-decisions"),
-      fetchJson<NewsPerformancePoint[]>("/api/news/performance"),
-      fetchJson<NewsPerformanceSummary>("/api/news/performance/summary"),
-      fetchJson<NewsPerformanceSettings>("/api/news/performance/settings"),
-      fetchJson<NewsAnalysisUsageSummary>("/api/news/usage"),
-      fetchJson<NewsAnalysisSettings>("/api/news/settings"),
-    ])
+    if (newsRequest.current) return newsRequest.current;
+    // SQLite-backed reports run sequentially instead of competing on every refresh.
+    const request = (async () => [
+      await fetchDashboardJson<NewsEventGroup[]>("/api/news/events"),
+      await fetchDashboardJson<NewsCollectorStatus>("/api/news/status"),
+      await fetchDashboardJson<StockNewsGroup[]>("/api/news/stocks"),
+      await fetchDashboardJson<DailyStockOutlook[]>("/api/news/daily-outlooks"),
+      await fetchDashboardJson<AiStockCandidate[]>("/api/news/candidates"),
+      await fetchDashboardJson<NewsTradeDecision[]>("/api/news/trade-decisions"),
+      await fetchDashboardJson<NewsPerformancePoint[]>("/api/news/performance"),
+      await fetchDashboardJson<NewsPerformanceSummary>("/api/news/performance/summary"),
+      await fetchDashboardJson<NewsPerformanceSettings>("/api/news/performance/settings"),
+      await fetchDashboardJson<NewsAnalysisUsageSummary>("/api/news/usage"),
+      await fetchDashboardJson<NewsAnalysisSettings>("/api/news/settings"),
+    ] as const)()
       .then(([events, collector, groups, outlooks, candidates, decisions, performance, performanceSummary, performanceSettings, analysisUsage, analysisSettings]) => {
         setNewsEvents(events);
         setNewsStatus(collector);
@@ -960,7 +963,9 @@ function App() {
         setNewsPerformance([]);
         setNewsPerformanceSummary(null);
         setNewsAnalysisUsage(null);
-      });
+      }).finally(() => { newsRequest.current = null; });
+    newsRequest.current = request;
+    return request;
   }
 
   function handleCollectNews() {

@@ -36,7 +36,7 @@ impl DashboardCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ApiResult<KisApiResponse>>,
     {
-        timeout(Duration::from_secs(8), async {
+        timeout(Duration::from_secs(9), async {
             let slot = {
                 let mut entries = self.entries.lock().await;
                 if entries.len() >= 128 {
@@ -68,7 +68,14 @@ impl DashboardCache {
                     "시세 조회가 혼잡합니다. 잠시 후 새로고침해 주세요.",
                 )
             })?;
-            let result = fetch().await;
+            // Cache timeouts too, so refreshes do not immediately hit the broker again.
+            let result = timeout(Duration::from_secs(8), fetch())
+                .await
+                .unwrap_or_else(|_| Err(api_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "dashboard_timeout",
+                    "증권사 조회 대기시간을 초과했습니다. 잠시 후 새로고침해 주세요.",
+                )));
             let ttl = if result.is_ok() { 5 } else { 10 };
             *entry = Some(Entry {
                 expires: Instant::now() + Duration::from_secs(ttl),
@@ -130,6 +137,22 @@ mod tests {
         slot.lock().await.as_mut().unwrap().expires = Instant::now();
         assert!(cache.get("quote".into(), fetch).await.is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn timeout_is_cached_instead_of_restarting_the_broker_call() {
+        let cache = DashboardCache::default();
+        let calls = AtomicUsize::new(0);
+        let fetch = || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<ApiResult<KisApiResponse>>().await
+        };
+        let result = cache.get("balance".into(), fetch).await;
+        assert!(matches!(result, Err((StatusCode::GATEWAY_TIMEOUT, _))));
+        let cached = timeout(Duration::from_millis(100), cache.get("balance".into(), fetch))
+            .await.expect("cached timeout should return immediately");
+        assert!(matches!(cached, Err((StatusCode::GATEWAY_TIMEOUT, _))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
