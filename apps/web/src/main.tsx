@@ -1,4 +1,5 @@
 import React from "react";
+import { createReadQueue } from "./readQueue";
 import { AccountPerformance } from "./AccountPerformance";
 import ReactDOM from "react-dom/client";
 import {
@@ -673,23 +674,25 @@ function App() {
   const accountSummary = dashboardData.balance?.output2?.[0];
   const dashboardRequest = React.useRef<Promise<void> | null>(null);
   const newsRequest = React.useRef<Promise<void> | null>(null);
+  const [initialLoaded, setInitialLoaded] = React.useState(false);
   const domesticHoldings = (dashboardData.balance?.output1 ?? []) as DomesticHolding[];
   const cryptoMarketType = activeMarket === "crypto-futures" ? "futures" : "spot";
 
   React.useEffect(() => {
     fetchDashboardJson<SystemStatus>("/api/status")
-      .then(setStatus)
-      .then(() => Promise.all([loadAutoRunLogs(), loadAutoMonitorStatus(), loadTradingRules(), loadRuleMonitorStatus(), loadRuleCheckLogs(), loadNews()]))
+      .then(async latest => {
+        setStatus(latest);
+        if (latest.kis?.configured && latest.kis.account_configured) await loadDashboardData();
+        await loadAutoMonitorStatus();
+        await loadAutoRunLogs();
+        await loadTradingRules();
+        await loadRuleMonitorStatus();
+        await loadRuleCheckLogs();
+        await loadNews();
+      })
+      .finally(() => setInitialLoaded(true))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
-
-  React.useEffect(() => {
-    if (!status?.kis?.configured || !status.kis.account_configured) {
-      return;
-    }
-
-    loadDashboardData();
-  }, [status?.kis?.configured, status?.kis?.account_configured]);
 
   React.useEffect(() => {
     if (status?.risk) {
@@ -740,16 +743,17 @@ function App() {
   }, [activeMarket]);
 
   React.useEffect(() => {
+    if (!initialLoaded) return;
     let busy = false;
     const timer = window.setInterval(() => {
       if (busy || document.hidden) return;
       busy = true;
       Promise.allSettled([loadRuleMonitorStatus(), loadRuleCheckLogs(), loadAutoMonitorStatus()])
         .finally(() => { busy = false; });
-    }, 5000);
+    }, 30000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [initialLoaded]);
 
   React.useEffect(() => {
     const query = stockQuery.trim();
@@ -2029,7 +2033,7 @@ function App() {
           </div>
 
           <div className="wide" hidden={domesticView !== "overview" && domesticView !== "ai"}>
-            <PricePlans apiBaseUrl={apiBaseUrl} />
+            {initialLoaded ? <PricePlans apiBaseUrl={apiBaseUrl} /> : <p role="status">계좌부터 순서대로 불러오고 있습니다.</p>}
           </div>
           <section className="risk-overview wide" hidden={domesticView !== "overview"} aria-label="운용 한도">
             <div><span>운용예산</span><strong>{formatKrw(status?.risk.auto_trading_budget_krw)}</strong></div>
@@ -3668,26 +3672,41 @@ function delay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+const enqueueRead = createReadQueue();
+
 function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  return fetch(`${apiBaseUrl}${path}`, init).then((response) => {
+  const read = async (): Promise<T> => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (init?.signal?.aborted) controller.abort();
+    init?.signal?.addEventListener("abort", abort, { once: true });
+    const timer = window.setTimeout(abort, 12000);
+    try {
+      return await fetch(`${apiBaseUrl}${path}`, { ...init, signal: controller.signal }).then((response) => {
     if (!response.ok) {
       return response.text().then((text) => {
         throw new Error(extractErrorMessage(text) || `Request failed: ${path}`);
       });
     }
     return response.json();
-  });
+      });
+    } finally {
+      window.clearTimeout(timer);
+      init?.signal?.removeEventListener("abort", abort);
+    }
+  };
+  // Orders and settings writes are never queued or automatically retried.
+  if (init?.method && init.method.toUpperCase() !== "GET") {
+    return fetch(`${apiBaseUrl}${path}`, init).then(async response => {
+      if (!response.ok) throw new Error(extractErrorMessage(await response.text()) || `Request failed: ${path}`);
+      return response.json();
+    });
+  }
+  return enqueueRead(read);
 }
 
 async function fetchDashboardJson<T>(path: string): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 12000);
-  try {
-    return await fetchJson<T>(path, { signal: controller.signal });
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error("조회 대기시간 초과 · 잠시 후 새로고침해 주세요.");
-    throw error;
-  } finally { window.clearTimeout(timer); }
+  return fetchJson<T>(path);
 }
 
 function extractErrorMessage(text: string): string {
