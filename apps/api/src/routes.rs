@@ -467,7 +467,19 @@ async fn news_analysis_usage(
 }
 
 async fn order_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {
-    Ok(Json(orders::list_logs(&state)?))
+    dashboard_log_read(move || orders::list_logs(&state)).await
+}
+
+async fn dashboard_log_read<T, F>(read: F) -> ApiResult<Json<T>>
+where T: Send + 'static, F: FnOnce() -> ApiResult<T> + Send + 'static {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let permit = SLOTS.try_acquire().map_err(|_| crate::error::api_error(
+        axum::http::StatusCode::TOO_MANY_REQUESTS, "logs_busy", "기록 조회 중입니다. 잠시 후 다시 시도해 주세요."))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        read().map(Json)
+    }).await.map_err(|e| crate::error::api_error(
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR, "logs_failed", e))?
 }
 
 async fn place_order(
@@ -487,7 +499,7 @@ async fn run_auto_trading(
 async fn auto_trading_logs(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
-    Ok(Json(auto_trading::list_logs(&state)?))
+    dashboard_log_read(move || auto_trading::list_logs(&state)).await
 }
 
 async fn auto_monitor_status(State(state): State<AppState>) -> Json<AutoMonitorStatus> {
@@ -535,7 +547,7 @@ async fn rule_monitor_status(State(state): State<AppState>) -> Json<RuleMonitorS
 }
 
 async fn rule_monitor_logs(State(state): State<AppState>) -> ApiResult<Json<Vec<RuleCheckLog>>> {
-    Ok(Json(rule_monitor::list_logs(&state)?))
+    dashboard_log_read(move || rule_monitor::list_logs(&state)).await
 }
 
 async fn start_rule_monitor(

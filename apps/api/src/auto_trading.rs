@@ -258,15 +258,7 @@ pub fn list_logs(state: &AppState) -> ApiResult<Vec<Value>> {
         return Ok(Vec::new());
     }
 
-    let content =
-        fs::read_to_string(path).map_err(|error| file_error("auto_log_read_failed", error))?;
-    let mut rows = content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect::<Vec<_>>();
-    rows.reverse();
-    rows.truncate(20);
-    Ok(rows)
+    crate::log_tail::read(path, 20).map_err(|error| file_error("auto_log_read_failed", error))
 }
 
 pub async fn monitor_status(state: &AppState) -> AutoMonitorStatus {

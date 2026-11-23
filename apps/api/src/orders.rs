@@ -108,15 +108,8 @@ pub fn list_logs(state: &AppState) -> ApiResult<Vec<Value>> {
         return Ok(Vec::new());
     }
 
-    let content =
-        fs::read_to_string(path).map_err(|error| file_error("order_log_read_failed", error))?;
-
-    let mut rows = content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect::<Vec<_>>();
-    rows.reverse();
-    rows.truncate(50);
+    let mut rows: Vec<Value> = crate::log_tail::read(path, 50)
+        .map_err(|error| file_error("order_log_read_failed", error))?;
     let db = rusqlite::Connection::open_with_flags(
         &state.config.news_db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

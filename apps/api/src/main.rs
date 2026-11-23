@@ -7,6 +7,7 @@ mod crypto;
 mod dashboard_cache;
 mod error;
 mod kis;
+mod log_tail;
 mod news;
 mod news_analysis_settings;
 mod news_performance;

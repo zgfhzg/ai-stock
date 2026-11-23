@@ -682,17 +682,24 @@ function App() {
     fetchDashboardJson<SystemStatus>("/api/status")
       .then(async latest => {
         setStatus(latest);
+        setInitialLoaded(true);
+        void loadAutoMonitorStatus();
         if (latest.kis?.configured && latest.kis.account_configured) await loadDashboardData();
-        await loadAutoMonitorStatus();
-        await loadAutoRunLogs();
-        await loadTradingRules();
-        await loadRuleMonitorStatus();
-        await loadRuleCheckLogs();
-        await loadNews();
       })
       .finally(() => setInitialLoaded(true))
       .catch(() => setError("API 서버에 연결할 수 없습니다."));
   }, []);
+
+  React.useEffect(() => {
+    if (!initialLoaded || activeMarket !== "stocks") return;
+    if (domesticView === "news") void loadNews();
+    if (domesticView === "ai" || domesticView === "orders") void loadAutoRunLogs();
+    if (domesticView === "ai" || domesticView === "settings") {
+      void loadTradingRules();
+      void loadRuleMonitorStatus();
+      void loadRuleCheckLogs();
+    }
+  }, [initialLoaded, activeMarket, domesticView]);
 
   React.useEffect(() => {
     if (status?.risk) {
@@ -701,7 +708,7 @@ function App() {
   }, [status?.risk]);
 
   React.useEffect(() => {
-    if (!selectedStockNewsSymbol) {
+    if (domesticView !== "news" || !selectedStockNewsSymbol) {
       setStockNewsTimeline([]);
       return;
     }
@@ -724,7 +731,7 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [selectedStockNewsSymbol]);
+  }, [selectedStockNewsSymbol, domesticView]);
 
   React.useEffect(() => {
     if (activeMarket === "stocks" || activeMarket === "overseas-stocks") {
@@ -748,12 +755,14 @@ function App() {
     const timer = window.setInterval(() => {
       if (busy || document.hidden) return;
       busy = true;
-      Promise.allSettled([loadRuleMonitorStatus(), loadRuleCheckLogs(), loadAutoMonitorStatus()])
+      Promise.allSettled(domesticView === "ai"
+        ? [loadRuleMonitorStatus(), loadRuleCheckLogs(), loadAutoMonitorStatus()]
+        : [loadAutoMonitorStatus()])
         .finally(() => { busy = false; });
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [initialLoaded]);
+  }, [initialLoaded, domesticView]);
 
   React.useEffect(() => {
     const query = stockQuery.trim();
@@ -813,7 +822,9 @@ function App() {
       const latest = await fetchDashboardJson<SystemStatus>("/api/status");
       setStatus(latest);
       if (activeMarket === "stocks") {
-        await Promise.all([loadDashboardData(), loadAutoMonitorStatus(), loadAutoRunLogs(), loadNews()]);
+        await Promise.all([loadDashboardData(), loadAutoMonitorStatus(),
+          ...(domesticView === "news" ? [loadNews()] : []),
+          ...(["ai", "orders"].includes(domesticView) ? [loadAutoRunLogs()] : [])]);
       } else if (activeMarket === "overseas-stocks") {
         await loadOverseasMarketData();
       } else {
@@ -3673,6 +3684,7 @@ function delay(milliseconds: number) {
 }
 
 const enqueueRead = createReadQueue();
+const enqueueBrokerRead = createReadQueue(1200);
 
 function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const read = async (): Promise<T> => {
@@ -3702,7 +3714,8 @@ function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       return response.json();
     });
   }
-  return enqueueRead(read);
+  const brokerRead = path === "/api/account/balance" || path.startsWith("/api/market/price/");
+  return (brokerRead ? enqueueBrokerRead : enqueueRead)(read);
 }
 
 async function fetchDashboardJson<T>(path: string): Promise<T> {
