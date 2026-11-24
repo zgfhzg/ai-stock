@@ -42,6 +42,7 @@ struct BrokerStatus {
     filled_amount: Option<f64>,
     remaining: u32,
     closed: bool,
+    expired: bool,
 }
 
 fn date_at(now: u64) -> anyhow::Result<String> {
@@ -158,7 +159,8 @@ async fn order_rows(state: &AppState, record: &StoredPlan, now: u64) -> anyhow::
         .broker_order
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Legacy order has no broker identity"))?;
-    let end = date_at(now)?;
+    let end = tracked.order_date.clone();
+    anyhow::ensure!(end <= date_at(now)?, "Order date is in the future");
     let side = if record.submitted_side.as_deref() == Some("buy") {
         "02"
     } else {
@@ -235,7 +237,7 @@ async fn order_rows(state: &AppState, record: &StoredPlan, now: u64) -> anyhow::
     anyhow::bail!("Broker order query exceeded pagination limit")
 }
 
-fn match_status(record: &StoredPlan, rows: &[Value]) -> anyhow::Result<BrokerStatus> {
+fn match_status(record: &StoredPlan, rows: &[Value], now: u64) -> anyhow::Result<BrokerStatus> {
     let tracked = record
         .broker_order
         .as_ref()
@@ -275,15 +277,28 @@ fn match_status(record: &StoredPlan, rows: &[Value]) -> anyhow::Result<BrokerSta
     let filled = number(row, "tot_ccld_qty")?;
     let remaining = number(row, "rmn_qty")?;
     anyhow::ensure!(
-        ordered == tracked.quantity
+        ordered > 0 && ordered == tracked.quantity
             && filled <= ordered
+            && filled >= tracked.filled_quantity
             && remaining <= ordered
             && filled.saturating_add(remaining) <= ordered,
         "Inconsistent broker order quantities"
     );
+    let cancelled = match row.get("cnc_cfrm_qty") {
+        Some(value) if !value.is_null() && value.as_str() != Some("") => number(row, "cnc_cfrm_qty")?,
+        _ => 0,
+    };
+    let rejected = number(row, "rjct_qty").unwrap_or(0);
+    anyhow::ensure!(u64::from(filled) + u64::from(cancelled) + u64::from(rejected) <= u64::from(ordered),
+        "Inconsistent broker terminal quantities");
+    // Paper history can report cncl_yn=N after a partial fill with no remaining
+    // quantity. Only a uniquely matched prior-day row may use this fallback.
+    // An empty result or same-day transient zero is never terminal evidence.
+    let expired = tracked.order_date < date_at(now)? && remaining == 0 && filled < ordered;
     let closed = row["cncl_yn"].as_str() == Some("Y")
         || filled == ordered
-        || number(row, "rjct_qty").ok() == Some(ordered);
+        || (remaining == 0 && filled + cancelled + rejected == ordered)
+        || expired;
     anyhow::ensure!(
         closed || remaining > 0,
         "Broker order state is not yet final"
@@ -300,6 +315,7 @@ fn match_status(record: &StoredPlan, rows: &[Value]) -> anyhow::Result<BrokerSta
             .filter(|v| v.is_finite() && *v > 0.0),
         remaining: if closed { 0 } else { remaining },
         closed,
+        expired,
     })
 }
 
@@ -347,7 +363,7 @@ pub async fn manage(
     let (held, holding_value) = position;
     hydrate_legacy(state, record)?;
     let rows = order_rows(state, record, now).await?;
-    let status = match_status(record, &rows)?;
+    let status = match_status(record, &rows, now)?;
     let side = record
         .submitted_side
         .clone()
@@ -375,12 +391,16 @@ pub async fn manage(
             record.submitted_side = None;
             record.order_status = if status.filled == tracked.quantity {
                 "filled"
+            } else if status.expired {
+                "expired"
             } else {
                 "cancelled"
             }
             .into();
             tracked.reason = if status.filled == tracked.quantity {
                 "체결 완료"
+            } else if status.expired {
+                "과거 주문 종료 확인: 증권사 잔여수량 0, 체결 수량 잔고 반영 확인"
             } else {
                 "미체결 잔량 취소 확인"
             }
@@ -643,6 +663,10 @@ mod tests {
     }
 
     async fn fixture(partial: bool, lost_cancel_reply: bool, paginate: bool) -> Fixture {
+        fixture_with_history(partial, lost_cancel_reply, paginate, false).await
+    }
+
+    async fn fixture_with_history(partial: bool, lost_cancel_reply: bool, paginate: bool, historical: bool) -> Fixture {
         let now = 20_000 * 86_400 - 9 * 3600 + 10 * 3600;
         let base_record = record(now);
         let phase = Arc::new(AtomicU32::new(0));
@@ -657,12 +681,13 @@ mod tests {
                 async move {
                     assert_eq!(headers["tr_id"],"VTTC0081R");
                     assert_eq!(params["ODNO"],"001");
+                    assert_eq!(params["INQR_STRT_DT"], params["INQR_END_DT"]);
                     if paginate && params["CTX_AREA_NK100"].is_empty() {
                         return ([("tr_cont","M")],Json(json!({"rt_cd":"0","output1":[],"ctx_area_fk100":"fk","ctx_area_nk100":"next"})));
                     }
                     if paginate {assert_eq!(headers["tr_cont"],"N");}
-                    let filled = if partial {if phase==0 {1} else {2}} else {0};
-                    ([("tr_cont","D")],Json(json!({"rt_cd":"0","output1":[row(&record,filled,3-filled,phase>0)]})))
+                    let filled = if historical {2} else if partial {if phase==0 {1} else {2}} else {0};
+                    ([("tr_cont","D")],Json(json!({"rt_cd":"0","output1":[row(&record,filled,if historical {0} else {3-filled},!historical && phase>0)]})))
                 }
             }))
             .route("/uapi/domestic-stock/v1/trading/order-rvsecncl",post(move |headers:axum::http::HeaderMap, Json(body):Json<Value>| {
@@ -844,14 +869,61 @@ mod tests {
     }
 
     #[test]
+    fn historical_zero_remaining_requires_exact_identity_and_consistent_fills() {
+        let now = 20_000 * 86_400 - 9 * 3600 + 10 * 3600;
+        let mut record = record(now);
+        let mut result = row(&record, 2, 0, false);
+        assert!(match_status(&record, &[result.clone()], now).is_err());
+        assert!(match_status(&record, &[result.clone()], now + 86400).unwrap().closed);
+        assert!(!match_status(&record, &[row(&record, 1, 2, false)], now + 86400).unwrap().closed);
+        result["odno"] = json!("different");
+        assert!(match_status(&record, &[result], now + 86400).is_err());
+        record.broker_order.as_mut().unwrap().filled_quantity = 3;
+        assert!(match_status(&record, &[row(&record, 2, 0, false)], now + 86400).is_err());
+    }
+
+    #[test]
+    fn confirmed_partial_cancellation_closes_same_day_without_cancel_flag() {
+        let now = 20_000 * 86_400 - 9 * 3600 + 10 * 3600;
+        let record = record(now);
+        let mut result = row(&record, 2, 0, false);
+        result["cnc_cfrm_qty"] = json!("1");
+        assert!(match_status(&record, &[result.clone()], now).unwrap().closed);
+        result["cnc_cfrm_qty"] = json!("2");
+        assert!(match_status(&record, &[result], now).is_err());
+    }
+
+    #[tokio::test]
+    async fn historical_partial_fill_recovers_after_restart_without_another_cancel() {
+        let fixture = fixture_with_history(true, false, false, true).await;
+        let now = 20_000 * 86_400 - 9 * 3600 + 10 * 3600;
+        let mut record = record(now);
+        record.expires_at_unix = now - 1;
+        record.order_status = "cancel_pending".into();
+        record.broker_order.as_mut().unwrap().cancel_requested = true;
+        let risk = risk(&fixture.state);
+        manage(&fixture.state, &mut record, (1, 10000), false, &risk, 400000, now + 86400).await.unwrap();
+        assert_eq!(record.order_status, "filled_waiting_balance");
+        let mut restored = ai_plans::load(&fixture.state, "005930").unwrap().unwrap();
+        manage(&fixture.state, &mut restored, (2, 20000), false, &risk, 400000, now + 86401).await.unwrap();
+        assert!(restored.submitted_side.is_none());
+        assert_eq!(restored.order_status, "expired");
+        let saved = ai_plans::load(&fixture.state, "005930").unwrap().unwrap();
+        assert!(saved.submitted_side.is_none());
+        assert_eq!(saved.broker_order.unwrap().filled_quantity, 2);
+        assert!(fixture.cancels.lock().unwrap().is_empty());
+        cleanup(fixture).await;
+    }
+
+    #[test]
     fn unknown_identity_requires_unique_matching_receipt() {
         let now = 20_000 * 86_400 - 9 * 3600 + 10 * 3600;
         let mut record = record(now);
         record.broker_order.as_mut().unwrap().order_no.clear();
         let row = row(&record, 0, 3, false);
-        assert!(match_status(&record, std::slice::from_ref(&row)).is_ok());
-        assert!(match_status(&record, &[row.clone(), row]).is_err());
-        assert!(match_status(&record, &[]).is_err());
+        assert!(match_status(&record, std::slice::from_ref(&row), now).is_ok());
+        assert!(match_status(&record, &[row.clone(), row], now).is_err());
+        assert!(match_status(&record, &[], now).is_err());
     }
 
     #[test]

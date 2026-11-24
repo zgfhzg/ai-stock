@@ -559,7 +559,11 @@ async fn build_decision_at(
             None,
             None,
         );
-        decision.skip_reason = Some("order_reconciliation_pending".into());
+        decision.skip_reason = Some(if pending.submitted_side.is_some() {
+            "order_reconciliation_pending"
+        } else {
+            "order_reconciled"
+        }.into());
         decision.price_plan = record;
         return Ok(decision);
     }
